@@ -63,6 +63,26 @@ public sealed class EpoXmlExporterTests
         Assert.Equal("0", veta6.Attribute("dano_da")?.Value);
     }
 
+    [Fact]
+    public void Keeps_Imported_B3_Summary_As_B3_Even_Above_Detail_Limit()
+    {
+        var exporter = new EpoXmlExporter();
+        var document = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "B3",
+                TaxableSupplyDate = new DateOnly(2026, 6, 30),
+                TaxBaseCzk = 12_000m,
+                VatCzk = 2_520m
+            }
+        });
+
+        Assert.NotNull(document.Descendants("VetaB3").SingleOrDefault());
+        Assert.Empty(document.Descendants("VetaB2"));
+    }
+
     private static TaxSubject Subject() => new()
     {
         Dic = "7503012671",

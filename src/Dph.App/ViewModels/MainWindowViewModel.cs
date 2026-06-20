@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dph.Core.Calculations;
@@ -11,6 +12,10 @@ namespace Dph.App.ViewModels;
 
 public partial class MainWindowViewModel : ViewModelBase
 {
+    private const string ExportDirectorySettingKey = "export_directory";
+    private const string WindowWidthSettingKey = "window_width";
+    private const string WindowHeightSettingKey = "window_height";
+
     private readonly DphRepository _repository;
     private readonly IAresClient _aresClient;
     private readonly IExchangeRateProvider _exchangeRateProvider;
@@ -22,13 +27,18 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private VatPeriod? selectedPeriod;
     [ObservableProperty] private CounterpartyViewModel? selectedCounterparty;
     [ObservableProperty] private InvoiceLineViewModel? selectedInvoice;
+    [ObservableProperty] private CounterpartyViewModel? selectedInvoiceCounterparty;
     [ObservableProperty] private string importDirectory = "";
+    [ObservableProperty] private string exportDirectory = ApplicationPaths.ExportDirectory;
     [ObservableProperty] private string statusMessage = "Připraveno.";
     [ObservableProperty] private string summaryText = "";
 
     public ObservableCollection<VatPeriod> Periods { get; } = [];
     public ObservableCollection<CounterpartyViewModel> Counterparties { get; } = [];
     public ObservableCollection<InvoiceLineViewModel> Invoices { get; } = [];
+    public string DatabasePath => ApplicationPaths.DatabasePath;
+    public Func<string?, Task<string?>> PickExportDirectoryAsync { get; set; } =
+        _ => Task.FromResult<string?>(null);
 
     public string[] InvoiceKindOptions { get; } =
     [
@@ -60,15 +70,63 @@ public partial class MainWindowViewModel : ViewModelBase
         _ = LoadAsync();
     }
 
+    public async Task<(double Width, double Height)?> LoadWindowSizeAsync()
+    {
+        await _repository.InitializeAsync();
+        var widthText = await _repository.LoadSettingAsync(WindowWidthSettingKey);
+        var heightText = await _repository.LoadSettingAsync(WindowHeightSettingKey);
+        if (!double.TryParse(widthText, NumberStyles.Float, CultureInfo.InvariantCulture, out var width)
+            || !double.TryParse(heightText, NumberStyles.Float, CultureInfo.InvariantCulture, out var height)
+            || width <= 0
+            || height <= 0)
+        {
+            return null;
+        }
+
+        return (width, height);
+    }
+
+    public async Task SaveWindowSizeAsync(double width, double height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        await _repository.InitializeAsync();
+        await _repository.SaveSettingAsync(WindowWidthSettingKey, width.ToString(CultureInfo.InvariantCulture));
+        await _repository.SaveSettingAsync(WindowHeightSettingKey, height.ToString(CultureInfo.InvariantCulture));
+    }
+
     partial void OnSelectedPeriodChanged(VatPeriod? value)
     {
         _ = LoadInvoicesAsync();
+    }
+
+    partial void OnSelectedInvoiceChanged(InvoiceLineViewModel? value)
+    {
+        SelectedInvoiceCounterparty = value?.CounterpartyId is null
+            ? null
+            : Counterparties.FirstOrDefault(x => x.Id == value.CounterpartyId.Value);
+    }
+
+    partial void OnSelectedInvoiceCounterpartyChanged(CounterpartyViewModel? value)
+    {
+        if (SelectedInvoice is null || value is null)
+        {
+            return;
+        }
+
+        SelectedInvoice.CounterpartyId = value.Id == 0 ? null : value.Id;
+        SelectedInvoice.CounterpartyName = value.DisplayName;
+        SelectedInvoice.CounterpartyDic = value.Dic;
     }
 
     [RelayCommand]
     private async Task LoadAsync()
     {
         await _repository.InitializeAsync();
+        ExportDirectory = await _repository.LoadSettingAsync(ExportDirectorySettingKey) ?? ApplicationPaths.ExportDirectory;
         TaxSubject = await _repository.LoadTaxSubjectAsync() ?? DefaultTaxSubject();
 
         Counterparties.Clear();
@@ -92,19 +150,22 @@ public partial class MainWindowViewModel : ViewModelBase
             SelectedPeriod = Periods[0];
         }
 
-        StatusMessage = $"Databáze: {ApplicationPaths.DatabasePath}";
+        StatusMessage = "Načteno.";
     }
 
     [RelayCommand]
     private async Task AddPeriodAsync()
     {
-        var today = DateTime.Today;
-        var previousMonth = new DateTime(today.Year, today.Month, 1).AddMonths(-1);
+        var sourcePeriod = SelectedPeriod ?? Periods.OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).FirstOrDefault();
+        var newMonth = sourcePeriod is null
+            ? new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1).AddMonths(-1)
+            : new DateTime(sourcePeriod.Year, sourcePeriod.Month, 1).AddMonths(1);
         var period = new VatPeriod
         {
-            Year = previousMonth.Year,
-            Month = previousMonth.Month,
-            SubmissionDate = DateOnly.FromDateTime(today)
+            Year = newMonth.Year,
+            Month = newMonth.Month,
+            SubmissionDate = DateOnly.FromDateTime(DateTime.Today),
+            FormType = sourcePeriod?.FormType ?? "B"
         };
 
         await _repository.SavePeriodAsync(period);
@@ -114,7 +175,11 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         SelectedPeriod = period;
+        var copied = sourcePeriod is null ? 0 : await CopyTemplateInvoicesAsync(sourcePeriod.Id, period);
         await LoadInvoicesAsync();
+        StatusMessage = copied == 0
+            ? $"Vytvořeno období {period.Label}."
+            : $"Vytvořeno období {period.Label} z {sourcePeriod!.Label}; zkopírováno {copied} řádků jako šablona.";
     }
 
     [RelayCommand]
@@ -122,7 +187,7 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         var counterparty = new CounterpartyViewModel
         {
-            CustomName = "Nový subjekt",
+            Name = "Nový subjekt",
             CountryCode = "CZ",
             Role = CounterpartyRole.Supplier.ToString()
         };
@@ -141,6 +206,7 @@ public partial class MainWindowViewModel : ViewModelBase
         var domain = SelectedCounterparty.ToDomain();
         await _repository.SaveCounterpartyAsync(domain);
         SelectedCounterparty.Id = domain.Id;
+        RefreshInvoiceCounterpartyNames(SelectedCounterparty);
         StatusMessage = $"Uloženo: {SelectedCounterparty.DisplayName}";
     }
 
@@ -164,29 +230,25 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var cached = await _repository.LoadAresCacheAsync(normalizedIco);
-        var subject = cached ?? await _aresClient.LookupByIcoAsync(normalizedIco);
+        var (subject, fromCache) = await LookupAresByIcoAsync(normalizedIco);
         if (subject is null)
         {
-            StatusMessage = "ARES subjekt nenašel.";
+            if (!StatusMessage.StartsWith("ARES chyba:", StringComparison.Ordinal)
+                && StatusMessage != "ARES neodpověděl včas."
+                && StatusMessage != "ARES vrátil neočekávaná data.")
+            {
+                StatusMessage = "ARES subjekt nenašel.";
+            }
+
             return;
         }
 
-        if (cached is null)
-        {
-            await _repository.SaveAresCacheAsync(subject);
-        }
-
         SelectedCounterparty.Ico = subject.Ico;
-        SelectedCounterparty.OfficialName = subject.OfficialName;
+        SelectedCounterparty.Name = subject.OfficialName;
         SelectedCounterparty.Dic = subject.Dic ?? SelectedCounterparty.Dic;
-        if (string.IsNullOrWhiteSpace(SelectedCounterparty.CustomName) || SelectedCounterparty.CustomName == "Nový subjekt")
-        {
-            SelectedCounterparty.CustomName = subject.OfficialName;
-        }
 
         await SaveCounterpartyAsync();
-        StatusMessage = $"ARES: {subject.OfficialName}";
+        StatusMessage = fromCache ? $"ARES cache: {subject.OfficialName}" : $"ARES: {subject.OfficialName}";
     }
 
     [RelayCommand]
@@ -210,24 +272,124 @@ public partial class MainWindowViewModel : ViewModelBase
 
     [RelayCommand]
     private async Task SaveInvoicesAsync()
+        => await SaveInvoicesCoreAsync();
+
+    private async Task<bool> SaveInvoicesCoreAsync()
     {
         if (SelectedPeriod is null)
         {
-            return;
+            return false;
+        }
+
+        var domains = Invoices.Select(PrepareInvoiceForSave).ToArray();
+        var validationMessage = await ValidateInvoiceReferencesAsync(domains);
+        if (validationMessage is not null)
+        {
+            StatusMessage = validationMessage;
+            return false;
         }
 
         await _repository.SaveTaxSubjectAsync(TaxSubject);
-        foreach (var invoice in Invoices)
+        for (var index = 0; index < Invoices.Count; index++)
         {
-            invoice.PeriodId = SelectedPeriod.Id;
-            var domain = invoice.ToDomain();
+            var invoice = Invoices[index];
+            var domain = domains[index];
             await _repository.SaveInvoiceAsync(domain);
             invoice.Id = domain.Id;
+            invoice.CounterpartyId = domain.CounterpartyId;
+            invoice.CounterpartyName = domain.CounterpartyName;
+            invoice.CounterpartyDic = domain.CounterpartyDic ?? "";
         }
 
         UpdateSummary();
         StatusMessage = "Uloženo.";
+        return true;
     }
+
+    private InvoiceLine PrepareInvoiceForSave(InvoiceLineViewModel invoice)
+    {
+        invoice.PeriodId = SelectedPeriod?.Id ?? invoice.PeriodId;
+        var domain = invoice.ToDomain();
+        if (domain.CounterpartyId is not null)
+        {
+            var counterparty = Counterparties.FirstOrDefault(x => x.Id == domain.CounterpartyId.Value);
+            if (counterparty is not null)
+            {
+                domain.CounterpartyName = counterparty.DisplayName;
+                domain.CounterpartyDic = counterparty.Dic.NullIfWhiteSpace();
+            }
+        }
+        else
+        {
+            ApplyCounterpartyReference(domain);
+        }
+
+        return domain;
+    }
+
+    private async Task<string?> ValidateInvoiceReferencesAsync(IReadOnlyList<InvoiceLine> invoices)
+    {
+        var seen = new Dictionary<string, InvoiceLine>(StringComparer.OrdinalIgnoreCase);
+        foreach (var invoice in invoices.Where(ShouldValidateInvoiceReference))
+        {
+            var key = InvoiceReferenceKey(invoice);
+            if (key is null)
+            {
+                continue;
+            }
+
+            if (seen.TryGetValue(key, out var duplicate))
+            {
+                return $"Duplicitní doklad v aktuálním období: {invoice.EvidenceNumber} / {InvoiceReferenceSubject(invoice)}. Stejný řádek už je v tabulce jako {duplicate.EvidenceNumber}.";
+            }
+
+            seen[key] = invoice;
+        }
+
+        foreach (var invoice in invoices.Where(ShouldValidateInvoiceReference))
+        {
+            var duplicate = await _repository.FindDuplicateInvoiceReferenceAsync(invoice);
+            if (duplicate is not null)
+            {
+                return $"Doklad {invoice.EvidenceNumber} pro subjekt {InvoiceReferenceSubject(invoice)} už je použitý v období {duplicate.PeriodLabel}.";
+            }
+        }
+
+        return null;
+    }
+
+    private static bool ShouldValidateInvoiceReference(InvoiceLine invoice)
+        => !string.IsNullOrWhiteSpace(invoice.EvidenceNumber)
+           && !IsControlStatementSummary(invoice)
+           && InvoiceReferenceKey(invoice) is not null;
+
+    private static string? InvoiceReferenceKey(InvoiceLine invoice)
+    {
+        var evidenceNumber = invoice.EvidenceNumber.NullIfWhiteSpace()?.ToUpperInvariant();
+        if (evidenceNumber is null)
+        {
+            return null;
+        }
+
+        var subject = invoice.CounterpartyId is not null
+            ? $"id:{invoice.CounterpartyId.Value}"
+            : invoice.CounterpartyDic.NullIfWhiteSpace() is { } dic
+                ? $"dic:{dic.ToUpperInvariant()}"
+                : invoice.CounterpartyName.NullIfWhiteSpace() is { } name
+                    ? $"name:{name.ToUpperInvariant()}"
+                    : null;
+
+        return subject is null ? null : $"{InvoiceReferenceScope(invoice.Kind)}|{evidenceNumber}|{subject}";
+    }
+
+    private static string InvoiceReferenceScope(InvoiceKind kind)
+        => kind == InvoiceKind.IssuedDomestic ? "Issued" : "Received";
+
+    private static string InvoiceReferenceSubject(InvoiceLine invoice)
+        => invoice.CounterpartyName.NullIfWhiteSpace()
+           ?? invoice.CounterpartyDic.NullIfWhiteSpace()
+           ?? invoice.CounterpartyId?.ToString(CultureInfo.InvariantCulture)
+           ?? "(bez subjektu)";
 
     [RelayCommand]
     private async Task DeleteSelectedInvoiceAsync()
@@ -272,7 +434,7 @@ public partial class MainWindowViewModel : ViewModelBase
         var baseCzk = VatCalculator.Money(invoice.ForeignAmount.Value * rate.RatePerUnit);
         SelectedInvoice.ExchangeRate = rate.RatePerUnit.ToString("0.####");
         SelectedInvoice.TaxBaseCzk = baseCzk.ToString("0.##");
-        SelectedInvoice.VatCzk = VatCalculator.Money(baseCzk * VatCalculator.StandardRate).ToString("0.##");
+        SelectedInvoice.VatCzk = VatCalculator.Money(baseCzk * VatCalculator.Rate(invoice.VatRate)).ToString("0.##");
         StatusMessage = $"Kurz {rate.CurrencyCode}: {rate.RatePerUnit:0.####} CZK";
         UpdateSummary();
     }
@@ -285,16 +447,29 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        await SaveInvoicesAsync();
-        Directory.CreateDirectory(ApplicationPaths.ExportDirectory);
+        var selectedDirectory = await PickExportDirectoryAsync(ExportDirectory);
+        if (string.IsNullOrWhiteSpace(selectedDirectory))
+        {
+            StatusMessage = "Export zrušen.";
+            return;
+        }
+
+        ExportDirectory = selectedDirectory;
+        await _repository.SaveSettingAsync(ExportDirectorySettingKey, ExportDirectory);
+        if (!await SaveInvoicesCoreAsync())
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(ExportDirectory);
         var invoices = Invoices.Select(x => x.ToDomain()).ToArray();
         var prefix = $"{SelectedPeriod.Year:D4}-{SelectedPeriod.Month:D2}";
-        var vatReturnPath = Path.Combine(ApplicationPaths.ExportDirectory, $"{prefix}_DPHDP_podani.xml");
-        var controlStatementPath = Path.Combine(ApplicationPaths.ExportDirectory, $"{prefix}_DPHKH_podani.xml");
+        var vatReturnPath = Path.Combine(ExportDirectory, $"{prefix}_DPHDP_podani.xml");
+        var controlStatementPath = Path.Combine(ExportDirectory, $"{prefix}_DPHKH_podani.xml");
 
         _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices).Save(vatReturnPath);
         _exporter.ExportControlStatement(TaxSubject, SelectedPeriod, invoices).Save(controlStatementPath);
-        StatusMessage = $"Exportováno: {ApplicationPaths.ExportDirectory}";
+        StatusMessage = $"Exportováno: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
     }
 
     [RelayCommand]
@@ -326,11 +501,44 @@ public partial class MainWindowViewModel : ViewModelBase
                 continue;
             }
 
+            await EnrichCounterpartyFromAresAsync(counterparty);
             await _repository.SaveCounterpartyAsync(counterparty);
             Counterparties.Add(CounterpartyViewModel.FromDomain(counterparty));
+            existingKeys.Add(key);
         }
 
-        StatusMessage = $"Import hotový. Subjektů: {imported.Counterparties.Count}, přeskočeno: {imported.SkippedFiles.Count}.";
+        var importedInvoiceCount = 0;
+        foreach (var importedPeriod in imported.Periods)
+        {
+            await _repository.SavePeriodAsync(importedPeriod.Period);
+            if (Periods.All(x => x.Id != importedPeriod.Period.Id))
+            {
+                Periods.Add(importedPeriod.Period);
+            }
+
+            var existingInvoices = await _repository.LoadInvoicesAsync(importedPeriod.Period.Id);
+            if (existingInvoices.Count > 0)
+            {
+                continue;
+            }
+
+            foreach (var invoice in importedPeriod.Invoices)
+            {
+                invoice.PeriodId = importedPeriod.Period.Id;
+                ApplyCounterpartyReference(invoice);
+                await _repository.SaveInvoiceAsync(invoice);
+                importedInvoiceCount++;
+            }
+        }
+
+        Periods.Clear();
+        foreach (var period in await _repository.LoadPeriodsAsync())
+        {
+            Periods.Add(period);
+        }
+
+        SelectedPeriod = Periods.FirstOrDefault();
+        StatusMessage = $"Import hotový. Subjektů: {imported.Counterparties.Count}, období: {imported.Periods.Count}, řádků: {importedInvoiceCount}, přeskočeno: {imported.SkippedFiles.Count}.";
     }
 
     private async Task LoadInvoicesAsync()
@@ -344,10 +552,159 @@ public partial class MainWindowViewModel : ViewModelBase
 
         foreach (var invoice in await _repository.LoadInvoicesAsync(SelectedPeriod.Id))
         {
-            Invoices.Add(InvoiceLineViewModel.FromDomain(invoice));
+            var viewModel = InvoiceLineViewModel.FromDomain(invoice);
+            ApplyCounterpartyReference(viewModel);
+            Invoices.Add(viewModel);
         }
 
         UpdateSummary();
+    }
+
+    private async Task<int> CopyTemplateInvoicesAsync(long sourcePeriodId, VatPeriod targetPeriod)
+    {
+        var sourceInvoices = await _repository.LoadInvoicesAsync(sourcePeriodId);
+        var copied = 0;
+        foreach (var source in sourceInvoices)
+        {
+            source.Id = 0;
+            source.PeriodId = targetPeriod.Id;
+            if (!IsControlStatementSummary(source))
+            {
+                source.EvidenceNumber = "";
+            }
+
+            source.TaxableSupplyDate = new DateOnly(targetPeriod.Year, targetPeriod.Month, DateTime.DaysInMonth(targetPeriod.Year, targetPeriod.Month));
+            await _repository.SaveInvoiceAsync(source);
+            copied++;
+        }
+
+        return copied;
+    }
+
+    private static bool IsControlStatementSummary(InvoiceLine invoice)
+        => string.Equals(invoice.EvidenceNumber, "A5", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(invoice.EvidenceNumber, "B3", StringComparison.OrdinalIgnoreCase);
+
+    private void ApplyCounterpartyReference(InvoiceLine invoice)
+    {
+        var counterparty = FindCounterparty(invoice.CounterpartyId, invoice.CounterpartyDic);
+
+        if (counterparty is null)
+        {
+            return;
+        }
+
+        invoice.CounterpartyId = counterparty.Id;
+        invoice.CounterpartyName = counterparty.DisplayName;
+        invoice.CounterpartyDic = counterparty.Dic.NullIfWhiteSpace();
+    }
+
+    private void ApplyCounterpartyReference(InvoiceLineViewModel invoice)
+    {
+        var counterparty = FindCounterparty(invoice.CounterpartyId, invoice.CounterpartyDic);
+
+        if (counterparty is null)
+        {
+            return;
+        }
+
+        invoice.CounterpartyId = counterparty.Id;
+        invoice.CounterpartyName = counterparty.DisplayName;
+        invoice.CounterpartyDic = counterparty.Dic;
+    }
+
+    private CounterpartyViewModel? FindCounterparty(long? id, string? dic)
+    {
+        if (id is not null)
+        {
+            var byId = Counterparties.FirstOrDefault(x => x.Id == id.Value);
+            if (byId is not null)
+            {
+                return byId;
+            }
+        }
+
+        return Counterparties.FirstOrDefault(x =>
+            !string.IsNullOrWhiteSpace(dic)
+            && string.Equals(x.Dic, dic, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task EnrichCounterpartyFromAresAsync(Counterparty counterparty)
+    {
+        if (!string.Equals(counterparty.CountryCode, "CZ", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var normalizedIco = AresClient.NormalizeIco(counterparty.Ico ?? "");
+        if (normalizedIco.Length != 8)
+        {
+            normalizedIco = AresClient.TryGetIcoFromDic(counterparty.Dic) ?? "";
+        }
+
+        if (normalizedIco.Length != 8)
+        {
+            return;
+        }
+
+        var (subject, _) = await LookupAresByIcoAsync(normalizedIco);
+        if (subject is null)
+        {
+            return;
+        }
+
+        counterparty.Ico = subject.Ico;
+        counterparty.Dic = subject.Dic ?? counterparty.Dic;
+        counterparty.Name = subject.OfficialName;
+        counterparty.AresUpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    private async Task<(AresSubject? Subject, bool FromCache)> LookupAresByIcoAsync(string ico)
+    {
+        var cached = await _repository.LoadAresCacheAsync(ico);
+        if (cached is not null)
+        {
+            return (cached, true);
+        }
+
+        try
+        {
+            var subject = await _aresClient.LookupByIcoAsync(ico);
+            if (subject is not null)
+            {
+                await _repository.SaveAresCacheAsync(subject);
+            }
+
+            return (subject, false);
+        }
+        catch (HttpRequestException exception)
+        {
+            StatusMessage = $"ARES chyba: {exception.Message}";
+            return (null, false);
+        }
+        catch (TaskCanceledException)
+        {
+            StatusMessage = "ARES neodpověděl včas.";
+            return (null, false);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            StatusMessage = "ARES vrátil neočekávaná data.";
+            return (null, false);
+        }
+    }
+
+    private void RefreshInvoiceCounterpartyNames(CounterpartyViewModel counterparty)
+    {
+        foreach (var invoice in Invoices.Where(x =>
+                     x.CounterpartyId == counterparty.Id
+                     || (!string.IsNullOrWhiteSpace(x.CounterpartyDic)
+                         && string.Equals(x.CounterpartyDic, counterparty.Dic, StringComparison.OrdinalIgnoreCase))))
+        {
+            invoice.CounterpartyId = counterparty.Id == 0 ? null : counterparty.Id;
+            invoice.CounterpartyName = counterparty.DisplayName;
+            invoice.CounterpartyDic = counterparty.Dic;
+        }
     }
 
     private void UpdateSummary()

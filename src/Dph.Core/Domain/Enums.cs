@@ -16,5 +16,7 @@ public enum InvoiceKind
 
 public enum VatRateKind
 {
-    Standard21
+    Standard21,
+    Reduced12,
+    Zero0
 }

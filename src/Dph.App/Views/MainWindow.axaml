@@ -25,7 +25,13 @@
             <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
                 <TextBlock Text="DPH Assistant" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
                 <TextBlock Grid.Column="1" Text="{Binding SummaryText}" Foreground="#D1D5DB" Margin="18,0,0,0" VerticalAlignment="Center"/>
-                <Button Grid.Column="2" Command="{Binding ExportXmlCommand}" Content="Export XML" Padding="14,6"/>
+                <Button Grid.Column="2"
+                        Command="{Binding ExportXmlCommand}"
+                        Content="Export XML"
+                        Background="#F9FAFB"
+                        Foreground="#111827"
+                        BorderBrush="#CBD5E1"
+                        Padding="14,6"/>
             </Grid>
         </Border>
 
@@ -42,7 +48,7 @@
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
                             </ListBox>
-                            <Button Grid.Row="2" Command="{Binding AddPeriodCommand}" Content="Nové období" HorizontalAlignment="Stretch"/>
+                            <Button Grid.Row="2" Command="{Binding AddPeriodCommand}" Content="Nové z vybraného" HorizontalAlignment="Stretch"/>
                         </Grid>
                     </Border>
 
@@ -78,7 +84,7 @@
                                     <Button Grid.Column="3" Command="{Binding SaveInvoicesCommand}" Content="Uložit"/>
                                 </Grid>
 
-                                <Grid Grid.Row="1" ColumnDefinitions="145,120,110,115,100,90,70,80,90,*" ColumnSpacing="6">
+                                <Grid Grid.Row="1" ColumnDefinitions="145,150,110,115,100,90,70,70,80,90,*" ColumnSpacing="6">
                                     <TextBlock Text="Typ"/>
                                     <TextBlock Grid.Column="1" Text="Subjekt"/>
                                     <TextBlock Grid.Column="2" Text="DIČ"/>
@@ -86,25 +92,39 @@
                                     <TextBlock Grid.Column="4" Text="DUZP"/>
                                     <TextBlock Grid.Column="5" Text="Základ"/>
                                     <TextBlock Grid.Column="6" Text="DPH"/>
-                                    <TextBlock Grid.Column="7" Text="Měna"/>
-                                    <TextBlock Grid.Column="8" Text="Cizí částka"/>
-                                    <TextBlock Grid.Column="9" Text="Poznámka"/>
+                                    <TextBlock Grid.Column="7" Text="Sazba"/>
+                                    <TextBlock Grid.Column="8" Text="Měna"/>
+                                    <TextBlock Grid.Column="9" Text="Cizí částka"/>
+                                    <TextBlock Grid.Column="10" Text="Poznámka"/>
                                 </Grid>
 
-                                <ListBox Grid.Row="2" ItemsSource="{Binding Invoices}" SelectedItem="{Binding SelectedInvoice}">
+                                <ListBox Grid.Row="2"
+                                         ItemsSource="{Binding Invoices}"
+                                         SelectedItem="{Binding SelectedInvoice}"
+                                         Padding="0"
+                                         BorderThickness="0"
+                                         Background="Transparent">
+                                    <ListBox.Styles>
+                                        <Style Selector="ListBoxItem">
+                                            <Setter Property="Padding" Value="0"/>
+                                            <Setter Property="Margin" Value="0"/>
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        </Style>
+                                    </ListBox.Styles>
                                     <ListBox.ItemTemplate>
                                         <DataTemplate x:DataType="vm:InvoiceLineViewModel">
-                                            <Grid ColumnDefinitions="145,120,110,115,100,90,70,80,90,*" ColumnSpacing="6" Margin="0,2">
+                                            <Grid ColumnDefinitions="145,150,110,115,100,90,70,70,80,90,*" ColumnSpacing="6" Margin="0,2">
                                                 <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="135"/>
-                                                <TextBox Grid.Column="1" Text="{Binding CounterpartyName}"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding CounterpartyName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                                                 <TextBox Grid.Column="2" Text="{Binding CounterpartyDic}"/>
                                                 <TextBox Grid.Column="3" Text="{Binding EvidenceNumber}"/>
                                                 <TextBox Grid.Column="4" Text="{Binding TaxableSupplyDate}"/>
-                                                <TextBox Grid.Column="5" Text="{Binding TaxBaseCzk}"/>
-                                                <TextBox Grid.Column="6" Text="{Binding VatCzk}"/>
-                                                <TextBox Grid.Column="7" Text="{Binding Currency}"/>
-                                                <TextBox Grid.Column="8" Text="{Binding ForeignAmount}"/>
-                                                <TextBox Grid.Column="9" Text="{Binding Note}"/>
+                                                <TextBox Grid.Column="5" Text="{Binding TaxBaseCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <TextBox Grid.Column="6" Text="{Binding VatCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <ComboBox Grid.Column="7" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
+                                                <TextBox Grid.Column="8" Text="{Binding Currency}"/>
+                                                <TextBox Grid.Column="9" Text="{Binding ForeignAmount}"/>
+                                                <TextBox Grid.Column="10" Text="{Binding Note}"/>
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -114,7 +134,17 @@
 
                         <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
                             <Button Command="{Binding ApplyCnbRateCommand}" Content="Kurz ČNB pro vybranou fakturu"/>
-                            <Button Grid.Column="1" Command="{Binding SaveInvoicesCommand}" Content="Přepočítat souhrn"/>
+                            <ComboBox Grid.Column="1"
+                                      Width="260"
+                                      ItemsSource="{Binding Counterparties}"
+                                      SelectedItem="{Binding SelectedInvoiceCounterparty}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:CounterpartyViewModel">
+                                        <TextBlock Text="{Binding DisplayName}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <Button Grid.Column="2" Command="{Binding SaveInvoicesCommand}" Content="Přepočítat souhrn"/>
                         </Grid>
                     </Grid>
                 </Grid>
@@ -140,21 +170,19 @@
                     </Border>
 
                     <Border Grid.Column="1" Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="14">
-                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
-                            <TextBlock Text="Vlastní název" VerticalAlignment="Center"/>
-                            <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.CustomName}"/>
-                            <TextBlock Grid.Row="1" Text="ARES název" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SelectedCounterparty.OfficialName}"/>
-                            <TextBlock Grid.Row="2" Text="IČO" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedCounterparty.Ico}"/>
-                            <TextBlock Grid.Row="3" Text="DIČ" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SelectedCounterparty.Dic}"/>
-                            <TextBlock Grid.Row="4" Text="Stát / role" VerticalAlignment="Center"/>
-                            <Grid Grid.Row="4" Grid.Column="1" ColumnDefinitions="100,180,*" ColumnSpacing="8">
+                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
+                            <TextBlock Text="Název" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.Name}"/>
+                            <TextBlock Grid.Row="1" Text="IČO" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SelectedCounterparty.Ico}"/>
+                            <TextBlock Grid.Row="2" Text="DIČ" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedCounterparty.Dic}"/>
+                            <TextBlock Grid.Row="3" Text="Stát / role" VerticalAlignment="Center"/>
+                            <Grid Grid.Row="3" Grid.Column="1" ColumnDefinitions="100,180,*" ColumnSpacing="8">
                                 <TextBox Text="{Binding SelectedCounterparty.CountryCode}"/>
                                 <ComboBox Grid.Column="1" ItemsSource="{Binding SelectedCounterparty.RoleOptions}" SelectedItem="{Binding SelectedCounterparty.Role}"/>
                             </Grid>
-                            <Grid Grid.Row="5" Grid.Column="1" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
+                            <Grid Grid.Row="4" Grid.Column="1" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
                                 <Button Command="{Binding FillCounterpartyFromAresCommand}" Content="Doplnit z ARES"/>
                                 <Button Grid.Column="1" Command="{Binding SaveCounterpartyCommand}" Content="Uložit subjekt"/>
                             </Grid>
@@ -176,7 +204,10 @@
         </TabControl>
 
         <Border Grid.Row="2" Background="#E5E7EB" Padding="10,6">
-            <TextBlock Text="{Binding StatusMessage}" Foreground="#374151"/>
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <TextBlock Text="{Binding StatusMessage}" Foreground="#374151"/>
+                <TextBlock Grid.Column="1" Text="{Binding DatabasePath, StringFormat='DB: {0}'}" Foreground="#374151"/>
+            </Grid>
         </Border>
     </Grid>
 </Window>

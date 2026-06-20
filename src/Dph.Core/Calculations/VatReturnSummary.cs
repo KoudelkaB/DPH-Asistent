@@ -43,9 +43,16 @@ public sealed class VatCalculator
         }
 
         return invoice.Kind == InvoiceKind.ReverseCharge
-            ? Money(invoice.TaxBaseCzk * StandardRate)
+            ? Money(invoice.TaxBaseCzk * Rate(invoice.VatRate))
             : 0m;
     }
+
+    public static decimal Rate(VatRateKind rate) => rate switch
+    {
+        VatRateKind.Reduced12 => 0.12m,
+        VatRateKind.Zero0 => 0m,
+        _ => StandardRate
+    };
 
     public static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 

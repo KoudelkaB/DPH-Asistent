@@ -20,9 +20,20 @@ public sealed class AresClient(HttpClient httpClient) : IAresClient
             return null;
         }
 
-        await using var stream = await httpClient.GetStreamAsync(
+        using var response = await httpClient.GetAsync(
             $"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{normalized}",
             cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
 
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         return Parse(document.RootElement);

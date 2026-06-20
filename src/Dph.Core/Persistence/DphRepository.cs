@@ -34,8 +34,7 @@ public sealed class DphRepository(string databasePath)
             );
             create table if not exists counterparties (
                 id integer primary key,
-                custom_name text not null,
-                official_name text null,
+                name text not null,
                 ico text null,
                 dic text null,
                 country_code text not null,
@@ -81,6 +80,10 @@ public sealed class DphRepository(string databasePath)
                 rate_czk text not null,
                 fetched_at text not null,
                 primary key(currency_code, rate_date)
+            );
+            create table if not exists app_settings (
+                key text primary key,
+                value text not null
             );
             """, cancellationToken);
     }
@@ -153,7 +156,7 @@ public sealed class DphRepository(string databasePath)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "select * from counterparties order by custom_name, official_name, dic, ico";
+        command.CommandText = "select * from counterparties order by name, dic, ico";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<Counterparty>();
         while (await reader.ReadAsync(cancellationToken))
@@ -161,8 +164,7 @@ public sealed class DphRepository(string databasePath)
             items.Add(new Counterparty
             {
                 Id = reader.GetInt64(reader.GetOrdinal("id")),
-                CustomName = Text(reader, "custom_name"),
-                OfficialName = NullableText(reader, "official_name"),
+                Name = Text(reader, "name"),
                 Ico = NullableText(reader, "ico"),
                 Dic = NullableText(reader, "dic"),
                 CountryCode = Text(reader, "country_code"),
@@ -180,18 +182,17 @@ public sealed class DphRepository(string databasePath)
         await using var command = connection.CreateCommand();
         command.CommandText = counterparty.Id == 0
             ? """
-              insert into counterparties (custom_name, official_name, ico, dic, country_code, role, ares_updated_at)
-              values ($custom_name, $official_name, $ico, $dic, $country_code, $role, $ares_updated_at)
+              insert into counterparties (name, ico, dic, country_code, role, ares_updated_at)
+              values ($name, $ico, $dic, $country_code, $role, $ares_updated_at)
               returning id
               """
             : """
-              update counterparties set custom_name=$custom_name, official_name=$official_name, ico=$ico, dic=$dic, country_code=$country_code, role=$role, ares_updated_at=$ares_updated_at
+              update counterparties set name=$name, ico=$ico, dic=$dic, country_code=$country_code, role=$role, ares_updated_at=$ares_updated_at
               where id=$id
               returning id
               """;
         Add(command, "$id", counterparty.Id);
-        Add(command, "$custom_name", counterparty.CustomName);
-        Add(command, "$official_name", counterparty.OfficialName);
+        Add(command, "$name", counterparty.Name);
         Add(command, "$ico", counterparty.Ico);
         Add(command, "$dic", counterparty.Dic);
         Add(command, "$country_code", counterparty.CountryCode);
@@ -323,6 +324,48 @@ public sealed class DphRepository(string databasePath)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<InvoiceReferenceDuplicate?> FindDuplicateInvoiceReferenceAsync(InvoiceLine invoice, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(invoice.EvidenceNumber)
+            || (invoice.CounterpartyId is null
+                && string.IsNullOrWhiteSpace(invoice.CounterpartyDic)
+                && string.IsNullOrWhiteSpace(invoice.CounterpartyName)))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select il.id, p.year, p.month
+            from invoice_lines il
+            join periods p on p.id = il.period_id
+            where il.id <> $id
+              and lower(trim(il.evidence_number)) = lower(trim($evidence_number))
+              and case when il.kind = 'IssuedDomestic' then 'Issued' else 'Received' end = $invoice_scope
+              and (
+                  ($counterparty_id is not null and il.counterparty_id = $counterparty_id)
+                  or ($counterparty_dic is not null and lower(trim(coalesce(il.counterparty_dic, ''))) = lower(trim($counterparty_dic)))
+                  or ($counterparty_id is null and $counterparty_dic is null and $counterparty_name is not null and lower(trim(il.counterparty_name)) = lower(trim($counterparty_name)))
+              )
+            order by p.year desc, p.month desc, il.id desc
+            limit 1
+            """;
+        Add(command, "$id", invoice.Id);
+        Add(command, "$evidence_number", invoice.EvidenceNumber);
+        Add(command, "$invoice_scope", InvoiceReferenceScope(invoice.Kind));
+        Add(command, "$counterparty_id", invoice.CounterpartyId);
+        Add(command, "$counterparty_dic", string.IsNullOrWhiteSpace(invoice.CounterpartyDic) ? null : invoice.CounterpartyDic);
+        Add(command, "$counterparty_name", string.IsNullOrWhiteSpace(invoice.CounterpartyName) ? null : invoice.CounterpartyName);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? new InvoiceReferenceDuplicate(
+                reader.GetInt64(reader.GetOrdinal("id")),
+                reader.GetInt32(reader.GetOrdinal("year")),
+                reader.GetInt32(reader.GetOrdinal("month")))
+            : null;
+    }
+
     public async Task<AresSubject?> LoadAresCacheAsync(string ico, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken);
@@ -357,6 +400,30 @@ public sealed class DphRepository(string databasePath)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<string?> LoadSettingAsync(string key, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select value from app_settings where key=$key";
+        Add(command, "$key", key);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value as string;
+    }
+
+    public async Task SaveSettingAsync(string key, string value, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            insert into app_settings (key, value)
+            values ($key, $value)
+            on conflict(key) do update set value=excluded.value
+            """;
+        Add(command, "$key", key);
+        Add(command, "$value", value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
@@ -386,4 +453,12 @@ public sealed class DphRepository(string databasePath)
 
     private static DateTimeOffset? ParseDateTimeOffset(string? value)
         => DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+
+    private static string InvoiceReferenceScope(InvoiceKind kind)
+        => kind == InvoiceKind.IssuedDomestic ? "Issued" : "Received";
+}
+
+public sealed record InvoiceReferenceDuplicate(long InvoiceId, int Year, int Month)
+{
+    public string PeriodLabel => $"{Month:D2}/{Year:D4}";
 }

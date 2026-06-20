@@ -63,7 +63,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
             TaxSubjectElement(subject, includeDataBox: true));
 
         var row = 1;
-        foreach (var invoice in lines.Where(x => x.Kind == InvoiceKind.IssuedDomestic && x.GrossCzk > _definition.ControlStatementDetailLimitCzk))
+        foreach (var invoice in lines.Where(IsIssuedDetail))
         {
             dph.Add(new XElement("VetaA4",
                 A("c_radku", row++),
@@ -76,7 +76,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
                 A("zdph_44", "N")));
         }
 
-        var smallIssued = lines.Where(x => x.Kind == InvoiceKind.IssuedDomestic && x.GrossCzk <= _definition.ControlStatementDetailLimitCzk).ToArray();
+        var smallIssued = lines.Where(IsIssuedSmall).ToArray();
         if (smallIssued.Length > 0)
         {
             dph.Add(new XElement("VetaA5",
@@ -85,7 +85,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         }
 
         row = 1;
-        foreach (var invoice in lines.Where(x => x.Kind == InvoiceKind.ReceivedDomesticWithVat && x.GrossCzk > _definition.ControlStatementDetailLimitCzk))
+        foreach (var invoice in lines.Where(IsReceivedDetail))
         {
             dph.Add(new XElement("VetaB2",
                 A("c_radku", row++),
@@ -98,7 +98,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
                 A("zdph_44", "N")));
         }
 
-        var smallReceived = lines.Where(x => x.Kind == InvoiceKind.ReceivedDomesticWithVat && x.GrossCzk <= _definition.ControlStatementDetailLimitCzk).ToArray();
+        var smallReceived = lines.Where(IsReceivedSmall).ToArray();
         if (smallReceived.Length > 0)
         {
             dph.Add(new XElement("VetaB3",
@@ -113,6 +113,27 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
 
         return Wrap(dph);
     }
+
+    private bool IsIssuedDetail(InvoiceLine invoice)
+        => invoice.Kind == InvoiceKind.IssuedDomestic
+           && !IsSummary(invoice, "A5")
+           && invoice.GrossCzk > _definition.ControlStatementDetailLimitCzk;
+
+    private bool IsIssuedSmall(InvoiceLine invoice)
+        => invoice.Kind == InvoiceKind.IssuedDomestic
+           && (IsSummary(invoice, "A5") || invoice.GrossCzk <= _definition.ControlStatementDetailLimitCzk);
+
+    private bool IsReceivedDetail(InvoiceLine invoice)
+        => invoice.Kind == InvoiceKind.ReceivedDomesticWithVat
+           && !IsSummary(invoice, "B3")
+           && invoice.GrossCzk > _definition.ControlStatementDetailLimitCzk;
+
+    private bool IsReceivedSmall(InvoiceLine invoice)
+        => invoice.Kind == InvoiceKind.ReceivedDomesticWithVat
+           && (IsSummary(invoice, "B3") || invoice.GrossCzk <= _definition.ControlStatementDetailLimitCzk);
+
+    private static bool IsSummary(InvoiceLine invoice, string code)
+        => string.Equals(invoice.EvidenceNumber, code, StringComparison.OrdinalIgnoreCase);
 
     private XElement VatReturnHeader(TaxSubject subject, VatPeriod period) => new("VetaD",
         A("dokument", "DP3"),
