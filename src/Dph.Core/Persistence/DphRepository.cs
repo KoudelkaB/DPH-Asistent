@@ -47,6 +47,8 @@ public sealed class DphRepository(string databasePath)
                 month integer not null,
                 submission_date text not null,
                 form_type text not null,
+                imported_at text null,
+                exported_at text null,
                 unique(year, month)
             );
             create table if not exists invoice_lines (
@@ -64,6 +66,7 @@ public sealed class DphRepository(string databasePath)
                 foreign_amount text null,
                 exchange_rate text null,
                 vat_rate text not null,
+                partial_deduction integer not null default 0,
                 note text null
             );
             create table if not exists ares_cache (
@@ -86,6 +89,9 @@ public sealed class DphRepository(string databasePath)
                 value text not null
             );
             """, cancellationToken);
+        await EnsureColumnAsync(connection, "periods", "imported_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "periods", "exported_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "invoice_lines", "partial_deduction", "integer not null default 0", cancellationToken);
     }
 
     public async Task<TaxSubject?> LoadTaxSubjectAsync(CancellationToken cancellationToken = default)
@@ -218,7 +224,9 @@ public sealed class DphRepository(string databasePath)
                 Year = reader.GetInt32(reader.GetOrdinal("year")),
                 Month = reader.GetInt32(reader.GetOrdinal("month")),
                 SubmissionDate = DateOnly.Parse(Text(reader, "submission_date")),
-                FormType = Text(reader, "form_type")
+                FormType = Text(reader, "form_type"),
+                ImportedAt = ParseDateTimeOffset(NullableText(reader, "imported_at")),
+                ExportedAt = ParseDateTimeOffset(NullableText(reader, "exported_at"))
             });
         }
 
@@ -230,9 +238,13 @@ public sealed class DphRepository(string databasePath)
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            insert into periods (id, year, month, submission_date, form_type)
-            values ($id, $year, $month, $submission_date, $form_type)
-            on conflict(year, month) do update set submission_date=excluded.submission_date, form_type=excluded.form_type
+            insert into periods (id, year, month, submission_date, form_type, imported_at, exported_at)
+            values ($id, $year, $month, $submission_date, $form_type, $imported_at, $exported_at)
+            on conflict(year, month) do update set
+                submission_date=excluded.submission_date,
+                form_type=excluded.form_type,
+                imported_at=coalesce(excluded.imported_at, periods.imported_at),
+                exported_at=coalesce(excluded.exported_at, periods.exported_at)
             returning id
             """;
         Add(command, "$id", period.Id == 0 ? null : period.Id);
@@ -240,9 +252,64 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$month", period.Month);
         Add(command, "$submission_date", period.SubmissionDate.ToString("yyyy-MM-dd"));
         Add(command, "$form_type", period.FormType);
+        Add(command, "$imported_at", period.ImportedAt?.ToString("O"));
+        Add(command, "$exported_at", period.ExportedAt?.ToString("O"));
         var id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? period.Id);
         period.Id = id;
         return id;
+    }
+
+    public async Task MarkPeriodImportedAsync(long periodId, DateTimeOffset importedAt, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update periods set imported_at=$imported_at where id=$id";
+        Add(command, "$id", periodId);
+        Add(command, "$imported_at", importedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task MarkPeriodExportedAsync(long periodId, DateTimeOffset exportedAt, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update periods set exported_at=$exported_at where id=$id";
+        Add(command, "$id", periodId);
+        Add(command, "$exported_at", exportedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ClearPeriodHistoryFlagsAsync(long periodId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update periods set imported_at=null, exported_at=null where id=$id";
+        Add(command, "$id", periodId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task DeletePeriodAsync(long periodId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var deleteInvoices = connection.CreateCommand())
+        {
+            deleteInvoices.Transaction = (SqliteTransaction)transaction;
+            deleteInvoices.CommandText = "delete from invoice_lines where period_id=$period_id";
+            Add(deleteInvoices, "$period_id", periodId);
+            await deleteInvoices.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deletePeriod = connection.CreateCommand())
+        {
+            deletePeriod.Transaction = (SqliteTransaction)transaction;
+            deletePeriod.CommandText = "delete from periods where id=$id";
+            Add(deletePeriod, "$id", periodId);
+            await deletePeriod.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<List<InvoiceLine>> LoadInvoicesAsync(long periodId, CancellationToken cancellationToken = default)
@@ -271,6 +338,7 @@ public sealed class DphRepository(string databasePath)
                 ForeignAmount = NullableDecimal(reader, "foreign_amount"),
                 ExchangeRate = NullableDecimal(reader, "exchange_rate"),
                 VatRate = Enum.Parse<VatRateKind>(Text(reader, "vat_rate")),
+                PartialDeduction = Bool(reader, "partial_deduction"),
                 Note = NullableText(reader, "note")
             });
         }
@@ -284,14 +352,14 @@ public sealed class DphRepository(string databasePath)
         await using var command = connection.CreateCommand();
         command.CommandText = invoice.Id == 0
             ? """
-              insert into invoice_lines (period_id, kind, counterparty_id, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, foreign_amount, exchange_rate, vat_rate, note)
-              values ($period_id, $kind, $counterparty_id, $counterparty_name, $counterparty_dic, $evidence_number, $taxable_supply_date, $tax_base_czk, $vat_czk, $currency, $foreign_amount, $exchange_rate, $vat_rate, $note)
+              insert into invoice_lines (period_id, kind, counterparty_id, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, foreign_amount, exchange_rate, vat_rate, partial_deduction, note)
+              values ($period_id, $kind, $counterparty_id, $counterparty_name, $counterparty_dic, $evidence_number, $taxable_supply_date, $tax_base_czk, $vat_czk, $currency, $foreign_amount, $exchange_rate, $vat_rate, $partial_deduction, $note)
               returning id
               """
             : """
               update invoice_lines set period_id=$period_id, kind=$kind, counterparty_id=$counterparty_id, counterparty_name=$counterparty_name, counterparty_dic=$counterparty_dic,
                   evidence_number=$evidence_number, taxable_supply_date=$taxable_supply_date, tax_base_czk=$tax_base_czk, vat_czk=$vat_czk,
-                  currency=$currency, foreign_amount=$foreign_amount, exchange_rate=$exchange_rate, vat_rate=$vat_rate, note=$note
+                  currency=$currency, foreign_amount=$foreign_amount, exchange_rate=$exchange_rate, vat_rate=$vat_rate, partial_deduction=$partial_deduction, note=$note
               where id=$id
               returning id
               """;
@@ -309,6 +377,7 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$foreign_amount", invoice.ForeignAmount?.ToString());
         Add(command, "$exchange_rate", invoice.ExchangeRate?.ToString());
         Add(command, "$vat_rate", invoice.VatRate.ToString());
+        Add(command, "$partial_deduction", invoice.PartialDeduction ? 1 : 0);
         Add(command, "$note", invoice.Note);
         var id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? invoice.Id);
         invoice.Id = id;
@@ -438,6 +507,29 @@ public sealed class DphRepository(string databasePath)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    private static async Task EnsureColumnAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        string columnDefinition,
+        CancellationToken cancellationToken)
+    {
+        await using var readCommand = connection.CreateCommand();
+        readCommand.CommandText = $"pragma table_info({tableName})";
+        await using (var reader = await readCommand.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (string.Equals(reader.GetString(reader.GetOrdinal("name")), columnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+            }
+        }
+
+        await ExecuteAsync(connection, $"alter table {tableName} add column {columnName} {columnDefinition}", cancellationToken);
+    }
+
     private static void Add(SqliteCommand command, string name, object? value)
         => command.Parameters.AddWithValue(name, value ?? DBNull.Value);
 
@@ -450,6 +542,9 @@ public sealed class DphRepository(string databasePath)
 
     private static decimal? NullableDecimal(SqliteDataReader reader, string name)
         => reader.IsDBNull(reader.GetOrdinal(name)) ? null : decimal.Parse(reader.GetString(reader.GetOrdinal(name)));
+
+    private static bool Bool(SqliteDataReader reader, string name)
+        => !reader.IsDBNull(reader.GetOrdinal(name)) && reader.GetInt64(reader.GetOrdinal(name)) != 0;
 
     private static DateTimeOffset? ParseDateTimeOffset(string? value)
         => DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;

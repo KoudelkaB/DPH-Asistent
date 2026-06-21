@@ -16,6 +16,7 @@ public sealed class InvoiceLine
     public decimal? ForeignAmount { get; set; }
     public decimal? ExchangeRate { get; set; }
     public VatRateKind VatRate { get; set; } = VatRateKind.Standard21;
+    public bool PartialDeduction { get; set; }
     public string? Note { get; set; }
 
     public decimal GrossCzk => TaxBaseCzk + VatCzk;

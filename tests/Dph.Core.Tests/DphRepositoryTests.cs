@@ -45,6 +45,99 @@ public sealed class DphRepositoryTests
     }
 
     [Fact]
+    public async Task Marks_Period_As_Imported_And_Exported()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+        await repository.SavePeriodAsync(period);
+        await repository.MarkPeriodImportedAsync(period.Id, new DateTimeOffset(2026, 6, 19, 12, 0, 0, TimeSpan.Zero));
+        await repository.MarkPeriodExportedAsync(period.Id, new DateTimeOffset(2026, 6, 20, 12, 0, 0, TimeSpan.Zero));
+
+        var loaded = await repository.LoadPeriodsAsync();
+
+        Assert.True(loaded.Single().IsLockedByHistory);
+        Assert.NotNull(loaded.Single().ImportedAt);
+        Assert.NotNull(loaded.Single().ExportedAt);
+    }
+
+    [Fact]
+    public async Task Clears_Period_Import_And_Export_Flags()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+        await repository.SavePeriodAsync(period);
+        await repository.MarkPeriodImportedAsync(period.Id, new DateTimeOffset(2026, 6, 19, 12, 0, 0, TimeSpan.Zero));
+        await repository.MarkPeriodExportedAsync(period.Id, new DateTimeOffset(2026, 6, 20, 12, 0, 0, TimeSpan.Zero));
+
+        await repository.ClearPeriodHistoryFlagsAsync(period.Id);
+
+        var loaded = await repository.LoadPeriodsAsync();
+        Assert.Null(loaded.Single().ImportedAt);
+        Assert.Null(loaded.Single().ExportedAt);
+        Assert.False(loaded.Single().IsLockedByHistory);
+    }
+
+    [Fact]
+    public async Task Deletes_Period_With_Its_Invoices()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+        await repository.SavePeriodAsync(period);
+        await repository.SaveInvoiceAsync(new InvoiceLine
+        {
+            PeriodId = period.Id,
+            Kind = InvoiceKind.IssuedDomestic,
+            EvidenceNumber = "2026-001",
+            CounterpartyName = "Odběratel",
+            CounterpartyDic = "CZ12345678",
+            TaxableSupplyDate = new DateOnly(2026, 5, 15),
+            TaxBaseCzk = 100m,
+            VatCzk = 21m
+        });
+
+        await repository.DeletePeriodAsync(period.Id);
+
+        Assert.Empty(await repository.LoadPeriodsAsync());
+        Assert.Empty(await repository.LoadInvoicesAsync(period.Id));
+    }
+
+    [Fact]
+    public async Task Saves_Partial_Deduction_On_Invoice()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+        await repository.SavePeriodAsync(period);
+        await repository.SaveInvoiceAsync(new InvoiceLine
+        {
+            PeriodId = period.Id,
+            Kind = InvoiceKind.ReceivedDomesticWithVat,
+            EvidenceNumber = "INV-POMER",
+            CounterpartyName = "Dodavatel",
+            CounterpartyDic = "CZ12345678",
+            TaxableSupplyDate = new DateOnly(2026, 5, 15),
+            TaxBaseCzk = 20_000m,
+            VatCzk = 2_100m,
+            PartialDeduction = true
+        });
+
+        var loaded = await repository.LoadInvoicesAsync(period.Id);
+
+        Assert.True(loaded.Single().PartialDeduction);
+    }
+
+    [Fact]
     public async Task Finds_Duplicate_Invoice_By_Evidence_Number_And_Counterparty()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");

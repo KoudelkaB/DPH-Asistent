@@ -94,7 +94,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
                 A("dic_dod", StripCz(invoice.CounterpartyDic)),
                 A("zakl_dane1", Money(invoice.TaxBaseCzk)),
                 A("dan1", Money(_calculator.ResolveVat(invoice))),
-                A("pomer", "N"),
+                A("pomer", invoice.PartialDeduction ? "A" : "N"),
                 A("zdph_44", "N")));
         }
 

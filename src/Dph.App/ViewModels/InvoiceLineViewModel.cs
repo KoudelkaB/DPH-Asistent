@@ -11,16 +11,16 @@ public partial class InvoiceLineViewModel : ViewModelBase
 
     public string[] KindOptions { get; } =
     [
-        InvoiceKind.IssuedDomestic.ToString(),
-        InvoiceKind.ReceivedDomesticWithVat.ToString(),
-        InvoiceKind.ReverseCharge.ToString()
+        "Vydaná",
+        "Přijatá",
+        "Reverse"
     ];
 
     public string[] VatRateOptions { get; } = ["21", "12", "0"];
 
     [ObservableProperty] private long id;
     [ObservableProperty] private long periodId;
-    [ObservableProperty] private string kind = InvoiceKind.ReceivedDomesticWithVat.ToString();
+    [ObservableProperty] private string kind = "Přijatá";
     [ObservableProperty] private long? counterpartyId;
     [ObservableProperty] private string counterpartyName = "";
     [ObservableProperty] private string counterpartyDic = "";
@@ -29,6 +29,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private string taxBaseCzk = "0";
     [ObservableProperty] private string vatCzk = "0";
     [ObservableProperty] private string vatRate = "21";
+    [ObservableProperty] private bool partialDeduction;
     [ObservableProperty] private string currency = "CZK";
     [ObservableProperty] private string foreignAmount = "";
     [ObservableProperty] private string exchangeRate = "";
@@ -38,7 +39,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
     {
         Id = invoice.Id,
         PeriodId = invoice.PeriodId,
-        Kind = invoice.Kind.ToString(),
+        Kind = KindText(invoice.Kind),
         CounterpartyId = invoice.CounterpartyId,
         CounterpartyName = invoice.CounterpartyName,
         CounterpartyDic = invoice.CounterpartyDic ?? "",
@@ -47,6 +48,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
         TaxBaseCzk = Format(invoice.TaxBaseCzk),
         VatCzk = Format(invoice.VatCzk),
         VatRate = RateText(invoice.VatRate),
+        PartialDeduction = invoice.PartialDeduction,
         Currency = invoice.Currency,
         ForeignAmount = invoice.ForeignAmount is null ? "" : Format(invoice.ForeignAmount.Value),
         ExchangeRate = invoice.ExchangeRate is null ? "" : Format(invoice.ExchangeRate.Value),
@@ -57,7 +59,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
     {
         Id = Id,
         PeriodId = PeriodId,
-        Kind = Enum.TryParse<InvoiceKind>(Kind, out var parsedKind) ? parsedKind : InvoiceKind.ReceivedDomesticWithVat,
+        Kind = ParseKind(Kind),
         CounterpartyId = CounterpartyId,
         CounterpartyName = CounterpartyName,
         CounterpartyDic = CounterpartyDic.NullIfWhiteSpace(),
@@ -66,6 +68,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
         TaxBaseCzk = ParseDecimal(TaxBaseCzk),
         VatCzk = ParseDecimal(VatCzk),
         VatRate = ParseVatRate(VatRate),
+        PartialDeduction = PartialDeduction,
         Currency = Currency.NullIfWhiteSpace()?.ToUpperInvariant() ?? "CZK",
         ForeignAmount = ForeignAmount.NullIfWhiteSpace() is null ? null : ParseDecimal(ForeignAmount),
         ExchangeRate = ExchangeRate.NullIfWhiteSpace() is null ? null : ParseDecimal(ExchangeRate),
@@ -142,5 +145,20 @@ public partial class InvoiceLineViewModel : ViewModelBase
         VatRateKind.Reduced12 => "12",
         VatRateKind.Zero0 => "0",
         _ => "21"
+    };
+
+    private static InvoiceKind ParseKind(string value) => value switch
+    {
+        "Vydaná" => InvoiceKind.IssuedDomestic,
+        "Přijatá" => InvoiceKind.ReceivedDomesticWithVat,
+        "Reverse" => InvoiceKind.ReverseCharge,
+        _ => Enum.TryParse<InvoiceKind>(value, out var parsed) ? parsed : InvoiceKind.ReceivedDomesticWithVat
+    };
+
+    private static string KindText(InvoiceKind kind) => kind switch
+    {
+        InvoiceKind.IssuedDomestic => "Vydaná",
+        InvoiceKind.ReverseCharge => "Reverse",
+        _ => "Přijatá"
     };
 }

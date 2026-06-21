@@ -83,6 +83,28 @@ public sealed class EpoXmlExporterTests
         Assert.Empty(document.Descendants("VetaB2"));
     }
 
+    [Fact]
+    public void Exports_Partial_Deduction_Flag_To_B2()
+    {
+        var exporter = new EpoXmlExporter();
+        var document = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "INV-POMER",
+                CounterpartyDic = "CZ12345678",
+                TaxableSupplyDate = new DateOnly(2026, 6, 30),
+                TaxBaseCzk = 20_000m,
+                VatCzk = 2_100m,
+                PartialDeduction = true
+            }
+        });
+
+        var vetaB2 = document.Descendants("VetaB2").Single();
+        Assert.Equal("A", vetaB2.Attribute("pomer")?.Value);
+    }
+
     private static TaxSubject Subject() => new()
     {
         Dic = "7503012671",

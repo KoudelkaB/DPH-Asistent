@@ -128,7 +128,8 @@ public sealed class EpoXmlImporter
                 EvidenceNumber = Attr(element, "c_evid_dd"),
                 TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period),
                 TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1"))
+                VatCzk = ParseMoney(Attr(element, "dan1")),
+                PartialDeduction = string.Equals(Attr(element, "pomer"), "A", StringComparison.OrdinalIgnoreCase)
             });
         }
 

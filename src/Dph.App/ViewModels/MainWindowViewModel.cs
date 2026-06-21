@@ -13,6 +13,7 @@ namespace Dph.App.ViewModels;
 public partial class MainWindowViewModel : ViewModelBase
 {
     private const string ExportDirectorySettingKey = "export_directory";
+    private const string BackupDirectorySettingKey = "backup_directory";
     private const string WindowWidthSettingKey = "window_width";
     private const string WindowHeightSettingKey = "window_height";
 
@@ -22,6 +23,12 @@ public partial class MainWindowViewModel : ViewModelBase
     private readonly EpoXmlExporter _exporter = new();
     private readonly EpoXmlImporter _importer = new();
     private readonly VatCalculator _calculator = new();
+    private readonly HashSet<long> _confirmedProtectedPeriodIds = [];
+    private readonly SemaphoreSlim _saveInvoicesLock = new(1, 1);
+    private CancellationTokenSource? _autosaveInvoicesCts;
+    private bool _hasPendingInvoiceChanges;
+    private bool _isLoadingInvoices;
+    private bool _isSavingInvoices;
 
     [ObservableProperty] private TaxSubject taxSubject = new();
     [ObservableProperty] private VatPeriod? selectedPeriod;
@@ -30,6 +37,7 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private CounterpartyViewModel? selectedInvoiceCounterparty;
     [ObservableProperty] private string importDirectory = "";
     [ObservableProperty] private string exportDirectory = ApplicationPaths.ExportDirectory;
+    [ObservableProperty] private string backupDirectory = ApplicationPaths.DataDirectory;
     [ObservableProperty] private string statusMessage = "Připraveno.";
     [ObservableProperty] private string summaryText = "";
 
@@ -39,12 +47,18 @@ public partial class MainWindowViewModel : ViewModelBase
     public string DatabasePath => ApplicationPaths.DatabasePath;
     public Func<string?, Task<string?>> PickExportDirectoryAsync { get; set; } =
         _ => Task.FromResult<string?>(null);
+    public Func<string, string, Task<string?>> PickDatabaseBackupTargetAsync { get; set; } =
+        (_, _) => Task.FromResult<string?>(null);
+    public Func<string, Task<string?>> PickDatabaseBackupSourceAsync { get; set; } =
+        _ => Task.FromResult<string?>(null);
+    public Func<string, string, Task<bool>> ConfirmAsync { get; set; } =
+        (_, _) => Task.FromResult(true);
 
     public string[] InvoiceKindOptions { get; } =
     [
-        InvoiceKind.IssuedDomestic.ToString(),
-        InvoiceKind.ReceivedDomesticWithVat.ToString(),
-        InvoiceKind.ReverseCharge.ToString()
+        "Vydaná",
+        "Přijatá",
+        "Reverse"
     ];
 
     public string[] CounterpartyRoleOptions { get; } =
@@ -103,6 +117,11 @@ public partial class MainWindowViewModel : ViewModelBase
         _ = LoadInvoicesAsync();
     }
 
+    partial void OnSelectedPeriodChanging(VatPeriod? value)
+    {
+        _ = FlushInvoicesAutosaveAsync();
+    }
+
     partial void OnSelectedInvoiceChanged(InvoiceLineViewModel? value)
     {
         SelectedInvoiceCounterparty = value?.CounterpartyId is null
@@ -127,6 +146,7 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         await _repository.InitializeAsync();
         ExportDirectory = await _repository.LoadSettingAsync(ExportDirectorySettingKey) ?? ApplicationPaths.ExportDirectory;
+        BackupDirectory = await _repository.LoadSettingAsync(BackupDirectorySettingKey) ?? ApplicationPaths.DataDirectory;
         TaxSubject = await _repository.LoadTaxSubjectAsync() ?? DefaultTaxSubject();
 
         Counterparties.Clear();
@@ -180,6 +200,91 @@ public partial class MainWindowViewModel : ViewModelBase
         StatusMessage = copied == 0
             ? $"Vytvořeno období {period.Label}."
             : $"Vytvořeno období {period.Label} z {sourcePeriod!.Label}; zkopírováno {copied} řádků jako šablona.";
+    }
+
+    [RelayCommand]
+    private async Task DeleteSelectedPeriodAsync()
+    {
+        if (SelectedPeriod is null)
+        {
+            return;
+        }
+
+        var period = SelectedPeriod;
+        var confirmed = await ConfirmAsync(
+            "Smazat období",
+            $"Opravdu chceš smazat období {period.Label} včetně všech jeho faktur? Tuto akci nejde vrátit.");
+        if (!confirmed)
+        {
+            StatusMessage = "Smazání období zrušeno.";
+            return;
+        }
+
+        await _repository.DeletePeriodAsync(period.Id);
+        _confirmedProtectedPeriodIds.Remove(period.Id);
+        Periods.Remove(period);
+        SelectedPeriod = Periods.FirstOrDefault();
+        if (SelectedPeriod is null)
+        {
+            Invoices.Clear();
+            UpdateSummary();
+        }
+
+        StatusMessage = $"Období {period.Label} smazáno.";
+    }
+
+    [RelayCommand]
+    private async Task BackupDatabaseAsync()
+    {
+        await _repository.InitializeAsync();
+        var defaultFileName = $"dph-backup-{DateTime.Now:yyyyMMdd-HHmmss}.sqlite";
+        var targetPath = await PickDatabaseBackupTargetAsync(BackupDirectory, defaultFileName);
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            StatusMessage = "Záloha DB zrušena.";
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+        File.Copy(DatabasePath, targetPath, overwrite: true);
+        BackupDirectory = Path.GetDirectoryName(targetPath) ?? BackupDirectory;
+        await _repository.SaveSettingAsync(BackupDirectorySettingKey, BackupDirectory);
+        StatusMessage = $"DB zálohována do {targetPath}";
+    }
+
+    [RelayCommand]
+    private async Task RestoreDatabaseAsync()
+    {
+        var sourcePath = await PickDatabaseBackupSourceAsync(BackupDirectory);
+        if (string.IsNullOrWhiteSpace(sourcePath))
+        {
+            StatusMessage = "Obnova DB zrušena.";
+            return;
+        }
+
+        if (!File.Exists(sourcePath))
+        {
+            StatusMessage = "Vybraný soubor zálohy neexistuje.";
+            return;
+        }
+
+        var confirmed = await ConfirmAsync(
+            "Obnovit databázi",
+            "Obnova přepíše aktuální databázi vybranou zálohou. Opravdu chceš pokračovat?");
+        if (!confirmed)
+        {
+            StatusMessage = "Obnova DB zrušena.";
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
+        var restoredBackupDirectory = Path.GetDirectoryName(sourcePath) ?? BackupDirectory;
+        File.Copy(sourcePath, DatabasePath, overwrite: true);
+        _confirmedProtectedPeriodIds.Clear();
+        await LoadAsync();
+        BackupDirectory = restoredBackupDirectory;
+        await _repository.SaveSettingAsync(BackupDirectorySettingKey, BackupDirectory);
+        StatusMessage = $"DB obnovena ze zálohy {sourcePath}";
     }
 
     [RelayCommand]
@@ -252,9 +357,19 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void AddInvoice()
+    private async Task AddInvoiceAsync()
     {
         if (SelectedPeriod is null)
+        {
+            return;
+        }
+
+        if (!await ConfirmProtectedPeriodChangeAsync("přidat fakturu"))
+        {
+            return;
+        }
+
+        if (!await FlushInvoicesAutosaveAsync())
         {
             return;
         }
@@ -263,52 +378,95 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             PeriodId = SelectedPeriod.Id,
             TaxableSupplyDate = new DateOnly(SelectedPeriod.Year, SelectedPeriod.Month, DateTime.DaysInMonth(SelectedPeriod.Year, SelectedPeriod.Month)).ToString("yyyy-MM-dd"),
-            Kind = InvoiceKind.ReceivedDomesticWithVat.ToString()
+            Kind = "Přijatá"
         };
-        Invoices.Add(invoice);
+
+        var domain = PrepareInvoiceForSave(invoice);
+        await _repository.SaveInvoiceAsync(domain);
+        ApplySavedDomainToViewModel(invoice, domain);
+        AddInvoiceViewModel(invoice);
         SelectedInvoice = invoice;
+        await ClearPeriodHistoryFlagsAsync(SelectedPeriod?.Id);
+        StatusMessage = "Faktura přidána a uložena.";
         UpdateSummary();
     }
 
     [RelayCommand]
     private async Task SaveInvoicesAsync()
-        => await SaveInvoicesCoreAsync();
+        => await SaveInvoicesCoreAsync(requirePendingChanges: false, successMessage: "Uloženo.");
 
-    private async Task<bool> SaveInvoicesCoreAsync()
+    private async Task<bool> SaveInvoicesCoreAsync(bool requirePendingChanges, string successMessage)
     {
         if (SelectedPeriod is null)
         {
             return false;
         }
 
-        var domains = Invoices.Select(PrepareInvoiceForSave).ToArray();
-        var validationMessage = await ValidateInvoiceReferencesAsync(domains);
-        if (validationMessage is not null)
+        await _saveInvoicesLock.WaitAsync();
+        try
         {
-            StatusMessage = validationMessage;
-            return false;
-        }
+            if (requirePendingChanges && !_hasPendingInvoiceChanges)
+            {
+                return true;
+            }
 
-        await _repository.SaveTaxSubjectAsync(TaxSubject);
-        for (var index = 0; index < Invoices.Count; index++)
+            var periodId = Invoices.FirstOrDefault()?.PeriodId ?? SelectedPeriod.Id;
+            var period = Periods.FirstOrDefault(x => x.Id == periodId) ?? SelectedPeriod;
+            if (!await ConfirmProtectedPeriodChangeAsync(period, "uložit změny"))
+            {
+                StatusMessage = "Uložení zrušeno.";
+                return false;
+            }
+
+            var domains = Invoices.Select(PrepareInvoiceForSave).ToArray();
+            var validationMessage = await ValidateInvoiceReferencesAsync(domains);
+            if (validationMessage is not null)
+            {
+                StatusMessage = validationMessage;
+                return false;
+            }
+
+            await _repository.SaveTaxSubjectAsync(TaxSubject);
+            _isSavingInvoices = true;
+            try
+            {
+                for (var index = 0; index < Invoices.Count; index++)
+                {
+                    var invoice = Invoices[index];
+                    var domain = domains[index];
+                    await _repository.SaveInvoiceAsync(domain);
+                    ApplySavedDomainToViewModel(invoice, domain);
+                }
+            }
+            finally
+            {
+                _isSavingInvoices = false;
+            }
+
+            await ClearPeriodHistoryFlagsAsync(periodId);
+            _hasPendingInvoiceChanges = false;
+            UpdateSummary();
+            StatusMessage = successMessage;
+            return true;
+        }
+        finally
         {
-            var invoice = Invoices[index];
-            var domain = domains[index];
-            await _repository.SaveInvoiceAsync(domain);
-            invoice.Id = domain.Id;
-            invoice.CounterpartyId = domain.CounterpartyId;
-            invoice.CounterpartyName = domain.CounterpartyName;
-            invoice.CounterpartyDic = domain.CounterpartyDic ?? "";
+            _saveInvoicesLock.Release();
         }
+    }
 
-        UpdateSummary();
-        StatusMessage = "Uloženo.";
-        return true;
+    private void ApplySavedDomainToViewModel(InvoiceLineViewModel invoice, InvoiceLine domain)
+    {
+        invoice.Id = domain.Id;
+        invoice.PeriodId = domain.PeriodId;
+        invoice.CounterpartyId = domain.CounterpartyId;
+        invoice.CounterpartyName = domain.CounterpartyName;
+        invoice.CounterpartyDic = domain.CounterpartyDic ?? "";
     }
 
     private InvoiceLine PrepareInvoiceForSave(InvoiceLineViewModel invoice)
     {
-        invoice.PeriodId = SelectedPeriod?.Id ?? invoice.PeriodId;
+        invoice.PeriodId = invoice.PeriodId == 0 ? SelectedPeriod?.Id ?? invoice.PeriodId : invoice.PeriodId;
         var domain = invoice.ToDomain();
         if (domain.CounterpartyId is not null)
         {
@@ -399,13 +557,26 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
+        if (!await ConfirmProtectedPeriodChangeAsync("smazat fakturu"))
+        {
+            StatusMessage = "Smazání zrušeno.";
+            return;
+        }
+
+        if (!await FlushInvoicesAutosaveAsync())
+        {
+            return;
+        }
+
         var id = SelectedInvoice.Id;
+        UnsubscribeInvoiceAutosave(SelectedInvoice);
         Invoices.Remove(SelectedInvoice);
         if (id != 0)
         {
             await _repository.DeleteInvoiceAsync(id);
         }
 
+        await ClearPeriodHistoryFlagsAsync(SelectedPeriod?.Id);
         UpdateSummary();
     }
 
@@ -414,6 +585,12 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         if (SelectedInvoice is null)
         {
+            return;
+        }
+
+        if (!await ConfirmProtectedPeriodChangeAsync("změnit vybranou fakturu"))
+        {
+            StatusMessage = "Změna zrušena.";
             return;
         }
 
@@ -435,6 +612,7 @@ public partial class MainWindowViewModel : ViewModelBase
         SelectedInvoice.ExchangeRate = rate.RatePerUnit.ToString("0.####");
         SelectedInvoice.TaxBaseCzk = baseCzk.ToString("0.##");
         SelectedInvoice.VatCzk = VatCalculator.Money(baseCzk * VatCalculator.Rate(invoice.VatRate)).ToString("0.##");
+        QueueInvoicesAutosave();
         StatusMessage = $"Kurz {rate.CurrencyCode}: {rate.RatePerUnit:0.####} CZK";
         UpdateSummary();
     }
@@ -456,11 +634,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
         ExportDirectory = selectedDirectory;
         await _repository.SaveSettingAsync(ExportDirectorySettingKey, ExportDirectory);
-        if (!await SaveInvoicesCoreAsync())
+        if (!await FlushInvoicesAutosaveAsync())
         {
             return;
         }
 
+        await _repository.SaveTaxSubjectAsync(TaxSubject);
         Directory.CreateDirectory(ExportDirectory);
         var invoices = Invoices.Select(x => x.ToDomain()).ToArray();
         var prefix = $"{SelectedPeriod.Year:D4}-{SelectedPeriod.Month:D2}";
@@ -469,6 +648,10 @@ public partial class MainWindowViewModel : ViewModelBase
 
         _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices).Save(vatReturnPath);
         _exporter.ExportControlStatement(TaxSubject, SelectedPeriod, invoices).Save(controlStatementPath);
+        var exportedAt = DateTimeOffset.UtcNow;
+        await _repository.MarkPeriodExportedAsync(SelectedPeriod.Id, exportedAt);
+        SelectedPeriod.ExportedAt = exportedAt;
+        await ReloadPeriodsAsync(SelectedPeriod.Id);
         StatusMessage = $"Exportováno: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
     }
 
@@ -510,6 +693,14 @@ public partial class MainWindowViewModel : ViewModelBase
         var importedInvoiceCount = 0;
         foreach (var importedPeriod in imported.Periods)
         {
+            var existingPeriod = Periods.FirstOrDefault(x => x.Year == importedPeriod.Period.Year && x.Month == importedPeriod.Period.Month);
+            if (existingPeriod?.IsLockedByHistory == true
+                && !await ConfirmProtectedPeriodChangeAsync(existingPeriod, "importovat data do tohoto období"))
+            {
+                continue;
+            }
+
+            importedPeriod.Period.ImportedAt = DateTimeOffset.UtcNow;
             await _repository.SavePeriodAsync(importedPeriod.Period);
             if (Periods.All(x => x.Id != importedPeriod.Period.Id))
             {
@@ -541,11 +732,47 @@ public partial class MainWindowViewModel : ViewModelBase
         StatusMessage = $"Import hotový. Subjektů: {imported.Counterparties.Count}, období: {imported.Periods.Count}, řádků: {importedInvoiceCount}, přeskočeno: {imported.SkippedFiles.Count}.";
     }
 
+    private async Task ReloadPeriodsAsync(long selectedPeriodId)
+    {
+        Periods.Clear();
+        foreach (var period in await _repository.LoadPeriodsAsync())
+        {
+            Periods.Add(period);
+        }
+
+        SelectedPeriod = Periods.FirstOrDefault(x => x.Id == selectedPeriodId) ?? Periods.FirstOrDefault();
+    }
+
+    private async Task ClearPeriodHistoryFlagsAsync(long? periodId)
+    {
+        if (periodId is null)
+        {
+            return;
+        }
+
+        var period = Periods.FirstOrDefault(x => x.Id == periodId.Value);
+        if (period is null || !period.IsLockedByHistory)
+        {
+            return;
+        }
+
+        await _repository.ClearPeriodHistoryFlagsAsync(periodId.Value);
+        _confirmedProtectedPeriodIds.Remove(periodId.Value);
+        await ReloadPeriodsAsync(SelectedPeriod?.Id ?? periodId.Value);
+    }
+
     private async Task LoadInvoicesAsync()
     {
+        foreach (var invoice in Invoices)
+        {
+            UnsubscribeInvoiceAutosave(invoice);
+        }
+
+        _isLoadingInvoices = true;
         Invoices.Clear();
         if (SelectedPeriod is null || SelectedPeriod.Id == 0)
         {
+            _isLoadingInvoices = false;
             UpdateSummary();
             return;
         }
@@ -554,10 +781,62 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             var viewModel = InvoiceLineViewModel.FromDomain(invoice);
             ApplyCounterpartyReference(viewModel);
-            Invoices.Add(viewModel);
+            AddInvoiceViewModel(viewModel);
+        }
+
+        _isLoadingInvoices = false;
+        _hasPendingInvoiceChanges = false;
+        UpdateSummary();
+    }
+
+    private void AddInvoiceViewModel(InvoiceLineViewModel invoice)
+    {
+        SubscribeInvoiceAutosave(invoice);
+        Invoices.Add(invoice);
+    }
+
+    private void SubscribeInvoiceAutosave(InvoiceLineViewModel invoice)
+        => invoice.PropertyChanged += OnInvoicePropertyChanged;
+
+    private void UnsubscribeInvoiceAutosave(InvoiceLineViewModel invoice)
+        => invoice.PropertyChanged -= OnInvoicePropertyChanged;
+
+    private void OnInvoicePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (_isLoadingInvoices || _isSavingInvoices || e.PropertyName is nameof(InvoiceLineViewModel.Id) or nameof(InvoiceLineViewModel.PeriodId))
+        {
+            return;
         }
 
         UpdateSummary();
+        QueueInvoicesAutosave();
+    }
+
+    private void QueueInvoicesAutosave()
+    {
+        _hasPendingInvoiceChanges = true;
+        _autosaveInvoicesCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _autosaveInvoicesCts = cts;
+        _ = AutosaveInvoicesAfterDelayAsync(cts.Token);
+    }
+
+    private async Task AutosaveInvoicesAfterDelayAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(500, cancellationToken);
+            await SaveInvoicesCoreAsync(requirePendingChanges: true, successMessage: "Automaticky uloženo.");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task<bool> FlushInvoicesAutosaveAsync()
+    {
+        _autosaveInvoicesCts?.Cancel();
+        return await SaveInvoicesCoreAsync(requirePendingChanges: true, successMessage: "Automaticky uloženo.");
     }
 
     private async Task<int> CopyTemplateInvoicesAsync(long sourcePeriodId, VatPeriod targetPeriod)
@@ -584,6 +863,45 @@ public partial class MainWindowViewModel : ViewModelBase
     private static bool IsControlStatementSummary(InvoiceLine invoice)
         => string.Equals(invoice.EvidenceNumber, "A5", StringComparison.OrdinalIgnoreCase)
            || string.Equals(invoice.EvidenceNumber, "B3", StringComparison.OrdinalIgnoreCase);
+
+    private Task<bool> ConfirmProtectedPeriodChangeAsync(string action)
+        => SelectedPeriod is null
+            ? Task.FromResult(true)
+            : ConfirmProtectedPeriodChangeAsync(SelectedPeriod, action);
+
+    private Task<bool> ConfirmProtectedPeriodChangeAsync(VatPeriod period, string action)
+    {
+        if (!period.IsLockedByHistory)
+        {
+            return Task.FromResult(true);
+        }
+
+        if (period.Id != 0 && _confirmedProtectedPeriodIds.Contains(period.Id))
+        {
+            return Task.FromResult(true);
+        }
+
+        var state = period.ImportedAt is not null && period.ExportedAt is not null
+            ? "importované i exportované"
+            : period.ImportedAt is not null
+                ? "importované"
+                : "exportované";
+
+        return ConfirmProtectedPeriodChangeCoreAsync(period, state, action);
+    }
+
+    private async Task<bool> ConfirmProtectedPeriodChangeCoreAsync(VatPeriod period, string state, string action)
+    {
+        var confirmed = await ConfirmAsync(
+            "Potvrdit změnu období",
+            $"Období {period.Label} už je {state}. Opravdu chceš {action}?");
+        if (confirmed && period.Id != 0)
+        {
+            _confirmedProtectedPeriodIds.Add(period.Id);
+        }
+
+        return confirmed;
+    }
 
     private void ApplyCounterpartyReference(InvoiceLine invoice)
     {

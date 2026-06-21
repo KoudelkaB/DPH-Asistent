@@ -1,4 +1,7 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Layout;
+using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Dph.App.ViewModels;
 
@@ -20,6 +23,9 @@ public partial class MainWindow : Window
         if (DataContext is MainWindowViewModel viewModel)
         {
             viewModel.PickExportDirectoryAsync = PickExportDirectoryAsync;
+            viewModel.PickDatabaseBackupTargetAsync = PickDatabaseBackupTargetAsync;
+            viewModel.PickDatabaseBackupSourceAsync = PickDatabaseBackupSourceAsync;
+            viewModel.ConfirmAsync = ConfirmAsync;
         }
     }
 
@@ -39,6 +45,112 @@ public partial class MainWindow : Window
         });
 
         return folders.Count == 0 ? null : folders[0].Path.LocalPath;
+    }
+
+    private async Task<string?> PickDatabaseBackupTargetAsync(string currentDirectory, string defaultFileName)
+    {
+        var startLocation = await TryGetStartLocationAsync(currentDirectory);
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Vyber soubor pro zálohu DB",
+            SuggestedStartLocation = startLocation,
+            SuggestedFileName = defaultFileName,
+            DefaultExtension = "sqlite",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("SQLite databáze")
+                {
+                    Patterns = ["*.sqlite", "*.db"]
+                }
+            ]
+        });
+
+        return file?.Path.LocalPath;
+    }
+
+    private async Task<string?> PickDatabaseBackupSourceAsync(string currentDirectory)
+    {
+        var startLocation = await TryGetStartLocationAsync(currentDirectory);
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Vyber zálohu DB",
+            AllowMultiple = false,
+            SuggestedStartLocation = startLocation,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("SQLite databáze")
+                {
+                    Patterns = ["*.sqlite", "*.db"]
+                },
+                FilePickerFileTypes.All
+            ]
+        });
+
+        return files.Count == 0 ? null : files[0].Path.LocalPath;
+    }
+
+    private async Task<IStorageFolder?> TryGetStartLocationAsync(string? currentDirectory)
+    {
+        return !string.IsNullOrWhiteSpace(currentDirectory) && Directory.Exists(currentDirectory)
+            ? await StorageProvider.TryGetFolderFromPathAsync(currentDirectory)
+            : null;
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string message)
+    {
+        var cancelButton = new Button
+        {
+            Content = "Zrušit",
+            MinWidth = 92
+        };
+        var continueButton = new Button
+        {
+            Content = "Pokračovat",
+            MinWidth = 110,
+            Background = Brushes.Black,
+            Foreground = Brushes.White
+        };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Children = { cancelButton, continueButton }
+        };
+        Grid.SetRow(buttons, 1);
+
+        var content = new Grid
+        {
+            RowDefinitions = new RowDefinitions("*,Auto"),
+            Margin = new Thickness(18),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = message,
+                    TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Center
+                },
+                buttons
+            }
+        };
+
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 440,
+            Height = 190,
+            MinWidth = 420,
+            MinHeight = 180,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = content
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(false);
+        continueButton.Click += (_, _) => dialog.Close(true);
+
+        return await dialog.ShowDialog<bool>(this);
     }
 
     private async void OnOpened(object? sender, EventArgs e)
