@@ -12,6 +12,8 @@ public sealed class EpoTaxFormDefinition
     public string SoftwareName { get; init; } = "DPH Assistant";
     public string SoftwareVersion { get; init; } = "0.1";
 
+    // Reverse charge v této aplikaci = přijetí služby ze zahraničí: dodavatel z EU (§9 odst.1) →
+    // ř.5/6, ze třetí země (§108) → ř.12/13; odpočet ř.43/44. Není to tuzemský přenos §92a a do KH nepatří.
     public string ReverseChargeNotice { get; init; } =
-        "Reverse-charge XML mapping must be verified against a fresh EPO reference fixture before filing.";
+        "Reverse charge = přijetí služby ze zahraničí: EU dodavatel → ř.5/6, třetí země → ř.12/13, odpočet ř.43/44; nepatří do kontrolního hlášení.";
 }

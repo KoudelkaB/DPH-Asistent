@@ -9,11 +9,15 @@ public partial class InvoiceLineViewModel : ViewModelBase
 {
     private bool _isRecalculating;
 
+    // "Reverse" = přijetí služby od osoby neusazené v tuzemsku (§108, zahraniční SaaS apod.),
+    // ř.12/13 + odpočet ř.43/44, mimo kontrolní hlášení. Viz InvoiceKind.ReverseCharge.
+    public const string ReverseChargeLabel = "Reverse (zahr. služba)";
+
     public string[] KindOptions { get; } =
     [
         "Vydaná",
         "Přijatá",
-        "Reverse"
+        ReverseChargeLabel
     ];
 
     public string[] VatRateOptions { get; } = ["21", "12", "0"];
@@ -151,14 +155,14 @@ public partial class InvoiceLineViewModel : ViewModelBase
     {
         "Vydaná" => InvoiceKind.IssuedDomestic,
         "Přijatá" => InvoiceKind.ReceivedDomesticWithVat,
-        "Reverse" => InvoiceKind.ReverseCharge,
+        ReverseChargeLabel or "Reverse" => InvoiceKind.ReverseCharge,
         _ => Enum.TryParse<InvoiceKind>(value, out var parsed) ? parsed : InvoiceKind.ReceivedDomesticWithVat
     };
 
     private static string KindText(InvoiceKind kind) => kind switch
     {
         InvoiceKind.IssuedDomestic => "Vydaná",
-        InvoiceKind.ReverseCharge => "Reverse",
+        InvoiceKind.ReverseCharge => ReverseChargeLabel,
         _ => "Přijatá"
     };
 }

@@ -58,7 +58,7 @@ public partial class MainWindowViewModel : ViewModelBase
     [
         "Vydaná",
         "Přijatá",
-        "Reverse"
+        InvoiceLineViewModel.ReverseChargeLabel
     ];
 
     public string[] CounterpartyRoleOptions { get; } =

@@ -64,6 +64,91 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
+    public void Foreign_Service_Reverse_Charge_Maps_To_Rows_12_13_And_43_44_And_Stays_Out_Of_Kh()
+    {
+        var exporter = new EpoXmlExporter();
+        var subject = Subject();
+        var period = new VatPeriod { Year = 2026, Month = 6 };
+        // Přijetí služby od osoby neusazené v tuzemsku (např. Anthropic), §108.
+        var invoices = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                EvidenceNumber = "OJWGTKQQ-0001",
+                TaxableSupplyDate = new DateOnly(2026, 6, 11),
+                TaxBaseCzk = 450m
+            }
+        };
+
+        var dph = exporter.ExportVatReturn(subject, period, invoices);
+        var veta1 = dph.Descendants("Veta1").Single();
+        Assert.Equal("450", veta1.Attribute("p_sl23_z")?.Value);   // ř.12 základ
+        Assert.Equal("95", veta1.Attribute("dan_psl23_z")?.Value); // ř.12 daň (450*0,21=94,5 -> 95)
+        var veta4 = dph.Descendants("Veta4").Single();
+        Assert.Equal("450", veta4.Attribute("nar_zdp23")?.Value);  // ř.43 základ
+        Assert.Equal("95", veta4.Attribute("od_zdp23")?.Value);    // ř.43 odpočet
+        Assert.Equal("95", veta4.Attribute("odp_sum_nar")?.Value); // ř.46 součet
+        // Nesmí skončit na neplatném ř.10/11 (Veta2) ani v kontrolním hlášení.
+        Assert.Empty(dph.Descendants("Veta2"));
+
+        var kh = exporter.ExportControlStatement(subject, period, invoices);
+        Assert.Empty(kh.Descendants("VetaB1"));
+        Assert.Empty(kh.Descendants("VetaB2"));
+    }
+
+    [Fact]
+    public void Eu_Registered_Supplier_Reverse_Charge_Maps_To_Rows_5_6_Not_12_13()
+    {
+        var exporter = new EpoXmlExporter();
+        // OpenAI Ireland (IE VAT) – osoba registrovaná v JČS, §9(1) → ř.5/6.
+        var dph = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 5 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                EvidenceNumber = "OPENAI-IE",
+                CounterpartyDic = "IE4143435AH",
+                TaxableSupplyDate = new DateOnly(2026, 5, 25),
+                TaxBaseCzk = 412.40m
+            }
+        });
+
+        var veta1 = dph.Descendants("Veta1").Single();
+        Assert.Equal("412", veta1.Attribute("p_sl23_e")?.Value);   // ř.5 základ
+        Assert.Equal("87", veta1.Attribute("dan_psl23_e")?.Value); // ř.5 daň
+        Assert.Null(veta1.Attribute("p_sl23_z"));                  // NEpatří na ř.12
+        var veta4 = dph.Descendants("Veta4").Single();
+        Assert.Equal("412", veta4.Attribute("nar_zdp23")?.Value);  // ř.43 (EU i třetí země)
+        Assert.Equal("87", veta4.Attribute("od_zdp23")?.Value);
+    }
+
+    [Fact]
+    public void Reduced_Rate_Foreign_Reverse_Charge_Uses_Rows_13_And_44()
+    {
+        var exporter = new EpoXmlExporter();
+        var dph = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                EvidenceNumber = "RC-RED",
+                TaxableSupplyDate = new DateOnly(2026, 6, 11),
+                TaxBaseCzk = 1_000m,
+                VatRate = VatRateKind.Reduced12
+            }
+        });
+
+        var veta1 = dph.Descendants("Veta1").Single();
+        Assert.Equal("1000", veta1.Attribute("p_sl5_z")?.Value);
+        Assert.Equal("120", veta1.Attribute("dan_psl5_z")?.Value);
+        Assert.Null(veta1.Attribute("p_sl23_z"));
+        var veta4 = dph.Descendants("Veta4").Single();
+        Assert.Equal("1000", veta4.Attribute("nar_zdp5")?.Value);
+        Assert.Equal("120", veta4.Attribute("od_zdp5")?.Value);
+    }
+
+    [Fact]
     public void Keeps_Imported_B3_Summary_As_B3_Even_Above_Detail_Limit()
     {
         var exporter = new EpoXmlExporter();
