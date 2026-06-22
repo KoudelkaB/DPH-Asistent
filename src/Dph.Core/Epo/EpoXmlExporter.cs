@@ -44,11 +44,17 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
                 A("odp_sum_nar", VatCalculator.WholeCrowns(summary.DomesticInputVat + summary.ReverseChargeVat))));
         }
 
+        // Net tax must equal the two reported whole-crown lines exactly; rounding each line
+        // independently and then rounding the raw difference can disagree by 1 CZK, which the
+        // EPO portal rejects (it recomputes ř.64 = ř.62 - ř.63).
+        var taxDueWhole = VatCalculator.WholeCrowns(summary.TaxDue);
+        var taxDeductionWhole = VatCalculator.WholeCrowns(summary.TaxDeduction);
+        var netWhole = taxDueWhole - taxDeductionWhole;
         dph.Add(new XElement("Veta6",
-            A("dan_zocelk", VatCalculator.WholeCrowns(summary.TaxDue)),
-            A("odp_zocelk", VatCalculator.WholeCrowns(summary.TaxDeduction)),
-            A(summary.NetTax >= 0 ? "dano_da" : "dano_no", Math.Abs(VatCalculator.WholeCrowns(summary.NetTax))),
-            A(summary.NetTax >= 0 ? "dano_no" : "dano_da", 0),
+            A("dan_zocelk", taxDueWhole),
+            A("odp_zocelk", taxDeductionWhole),
+            A(netWhole >= 0 ? "dano_da" : "dano_no", Math.Abs(netWhole)),
+            A(netWhole >= 0 ? "dano_no" : "dano_da", 0),
             A("dano", 0)));
 
         return Wrap(dph);

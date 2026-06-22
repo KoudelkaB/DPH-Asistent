@@ -1,3 +1,4 @@
+using System.Globalization;
 using Dph.Core.Domain;
 using Dph.Core.Persistence;
 
@@ -5,6 +6,45 @@ namespace Dph.Core.Tests;
 
 public sealed class DphRepositoryTests
 {
+    [Fact]
+    public async Task Persists_Decimals_Independently_Of_Current_Culture()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var originalCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            // Save under a comma-decimal culture, read under invariant: must not corrupt the value.
+            CultureInfo.CurrentCulture = new CultureInfo("cs-CZ");
+            var repository = new DphRepository(path);
+            await repository.InitializeAsync();
+            var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+            await repository.SavePeriodAsync(period);
+            await repository.SaveInvoiceAsync(new InvoiceLine
+            {
+                PeriodId = period.Id,
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "INV-1",
+                CounterpartyName = "Dodavatel",
+                TaxableSupplyDate = new DateOnly(2026, 5, 15),
+                TaxBaseCzk = 1234.56m,
+                VatCzk = 259.26m,
+                ForeignAmount = 50.25m,
+                ExchangeRate = 24.567m
+            });
+
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            var loaded = (await repository.LoadInvoicesAsync(period.Id)).Single();
+            Assert.Equal(1234.56m, loaded.TaxBaseCzk);
+            Assert.Equal(259.26m, loaded.VatCzk);
+            Assert.Equal(50.25m, loaded.ForeignAmount);
+            Assert.Equal(24.567m, loaded.ExchangeRate);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
+    }
+
     [Fact]
     public async Task Saves_Ares_Cache_And_Counterparty_Name()
     {

@@ -71,10 +71,12 @@ public partial class MainWindowViewModel : ViewModelBase
     public MainWindowViewModel()
         : this(
             new DphRepository(ApplicationPaths.DatabasePath),
-            new AresClient(new HttpClient()),
-            new CnbExchangeRateClient(new HttpClient()))
+            new AresClient(CreateHttpClient()),
+            new CnbExchangeRateClient(CreateHttpClient()))
     {
     }
+
+    private static HttpClient CreateHttpClient() => new() { Timeout = TimeSpan.FromSeconds(15) };
 
     public MainWindowViewModel(DphRepository repository, IAresClient aresClient, IExchangeRateProvider exchangeRateProvider)
     {
@@ -180,6 +182,17 @@ public partial class MainWindowViewModel : ViewModelBase
         var newMonth = sourcePeriod is null
             ? new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1).AddMonths(-1)
             : new DateTime(sourcePeriod.Year, sourcePeriod.Month, 1).AddMonths(1);
+
+        var existing = Periods.FirstOrDefault(x => x.Year == newMonth.Year && x.Month == newMonth.Month);
+        if (existing is not null)
+        {
+            // Reuse the existing instance instead of inserting a duplicate id and re-copying
+            // template invoices into an already-populated period.
+            SelectedPeriod = existing;
+            StatusMessage = $"Období {existing.Label} už existuje.";
+            return;
+        }
+
         var period = new VatPeriod
         {
             Year = newMonth.Year,
@@ -466,8 +479,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private InvoiceLine PrepareInvoiceForSave(InvoiceLineViewModel invoice)
     {
-        invoice.PeriodId = invoice.PeriodId == 0 ? SelectedPeriod?.Id ?? invoice.PeriodId : invoice.PeriodId;
         var domain = invoice.ToDomain();
+        if (domain.PeriodId == 0)
+        {
+            domain.PeriodId = SelectedPeriod?.Id ?? domain.PeriodId;
+        }
+
         if (domain.CounterpartyId is not null)
         {
             var counterparty = Counterparties.FirstOrDefault(x => x.Id == domain.CounterpartyId.Value);
@@ -537,11 +554,8 @@ public partial class MainWindowViewModel : ViewModelBase
                     ? $"name:{name.ToUpperInvariant()}"
                     : null;
 
-        return subject is null ? null : $"{InvoiceReferenceScope(invoice.Kind)}|{evidenceNumber}|{subject}";
+        return subject is null ? null : $"{invoice.Kind.ReferenceScope()}|{evidenceNumber}|{subject}";
     }
-
-    private static string InvoiceReferenceScope(InvoiceKind kind)
-        => kind == InvoiceKind.IssuedDomestic ? "Issued" : "Received";
 
     private static string InvoiceReferenceSubject(InvoiceLine invoice)
         => invoice.CounterpartyName.NullIfWhiteSpace()
@@ -601,7 +615,27 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var rate = await _exchangeRateProvider.GetRateAsync(invoice.Currency, invoice.TaxableSupplyDate);
+        ExchangeRate? rate;
+        try
+        {
+            rate = await _exchangeRateProvider.GetRateAsync(invoice.Currency, invoice.TaxableSupplyDate);
+        }
+        catch (HttpRequestException exception)
+        {
+            StatusMessage = $"ČNB chyba: {exception.Message}";
+            return;
+        }
+        catch (TaskCanceledException)
+        {
+            StatusMessage = "ČNB neodpověděl včas.";
+            return;
+        }
+        catch (FormatException)
+        {
+            StatusMessage = "ČNB vrátil neočekávaná data.";
+            return;
+        }
+
         if (rate is null)
         {
             StatusMessage = "Kurz ČNB nebyl nalezen.";
@@ -653,6 +687,14 @@ public partial class MainWindowViewModel : ViewModelBase
         SelectedPeriod.ExportedAt = exportedAt;
         await ReloadPeriodsAsync(SelectedPeriod.Id);
         StatusMessage = $"Exportováno: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
+
+        // Reverse-charge received supplies belong in KH oddíl B1, which we do not generate
+        // (it needs the kód předmětu plnění we don't model). Make the gap visible instead of silent.
+        var reverseChargeCount = invoices.Count(x => x.Kind == InvoiceKind.ReverseCharge);
+        if (reverseChargeCount > 0)
+        {
+            StatusMessage += $" Upozornění: {reverseChargeCount} reverse-charge řádků není v kontrolním hlášení (oddíl B1) – doplň ručně v EPO.";
+        }
     }
 
     [RelayCommand]
@@ -903,32 +945,36 @@ public partial class MainWindowViewModel : ViewModelBase
         return confirmed;
     }
 
+    private (long Id, string Name, string? Dic)? ResolveCounterpartyReference(long? id, string? dic)
+    {
+        var counterparty = FindCounterparty(id, dic);
+        return counterparty is null
+            ? null
+            : (counterparty.Id, counterparty.DisplayName, counterparty.Dic.NullIfWhiteSpace());
+    }
+
     private void ApplyCounterpartyReference(InvoiceLine invoice)
     {
-        var counterparty = FindCounterparty(invoice.CounterpartyId, invoice.CounterpartyDic);
-
-        if (counterparty is null)
+        if (ResolveCounterpartyReference(invoice.CounterpartyId, invoice.CounterpartyDic) is not { } reference)
         {
             return;
         }
 
-        invoice.CounterpartyId = counterparty.Id;
-        invoice.CounterpartyName = counterparty.DisplayName;
-        invoice.CounterpartyDic = counterparty.Dic.NullIfWhiteSpace();
+        invoice.CounterpartyId = reference.Id;
+        invoice.CounterpartyName = reference.Name;
+        invoice.CounterpartyDic = reference.Dic;
     }
 
     private void ApplyCounterpartyReference(InvoiceLineViewModel invoice)
     {
-        var counterparty = FindCounterparty(invoice.CounterpartyId, invoice.CounterpartyDic);
-
-        if (counterparty is null)
+        if (ResolveCounterpartyReference(invoice.CounterpartyId, invoice.CounterpartyDic) is not { } reference)
         {
             return;
         }
 
-        invoice.CounterpartyId = counterparty.Id;
-        invoice.CounterpartyName = counterparty.DisplayName;
-        invoice.CounterpartyDic = counterparty.Dic;
+        invoice.CounterpartyId = reference.Id;
+        invoice.CounterpartyName = reference.Name;
+        invoice.CounterpartyDic = reference.Dic ?? "";
     }
 
     private CounterpartyViewModel? FindCounterparty(long? id, string? dic)
@@ -1037,9 +1083,6 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private static TaxSubject DefaultTaxSubject() => new()
     {
-        DisplayName = "Bohdan Koudelka",
-        FirstName = "Bohdan",
-        LastName = "Koudelka",
         Country = "Česká Republika",
         ActivityCode = "620000"
     };

@@ -47,9 +47,12 @@ public sealed class CnbExchangeRateClient(HttpClient httpClient) : IExchangeRate
                 continue;
             }
 
-            var amount = int.Parse(parts[2], CultureInfo.InvariantCulture);
-            var rate = decimal.Parse(parts[4].Replace(',', '.'), CultureInfo.InvariantCulture);
-            return new ExchangeRate(date, parts[3], amount, rate);
+            if (int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var amount)
+                && amount > 0
+                && decimal.TryParse(parts[4].Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var rate))
+            {
+                return new ExchangeRate(date, parts[3], amount, rate);
+            }
         }
 
         return null;

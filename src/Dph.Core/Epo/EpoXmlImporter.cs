@@ -129,6 +129,7 @@ public sealed class EpoXmlImporter
                 TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period),
                 TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
                 VatCzk = ParseMoney(Attr(element, "dan1")),
+                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1"))),
                 PartialDeduction = string.Equals(Attr(element, "pomer"), "A", StringComparison.OrdinalIgnoreCase)
             });
         }
@@ -142,7 +143,8 @@ public sealed class EpoXmlImporter
                 EvidenceNumber = "A5",
                 TaxableSupplyDate = LastDay(period.Period),
                 TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1"))
+                VatCzk = ParseMoney(Attr(element, "dan1")),
+                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1")))
             });
         }
 
@@ -156,7 +158,8 @@ public sealed class EpoXmlImporter
                 EvidenceNumber = Attr(element, "c_evid_dd"),
                 TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period),
                 TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1"))
+                VatCzk = ParseMoney(Attr(element, "dan1")),
+                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1")))
             });
         }
 
@@ -169,9 +172,27 @@ public sealed class EpoXmlImporter
                 EvidenceNumber = "B3",
                 TaxableSupplyDate = LastDay(period.Period),
                 TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1"))
+                VatCzk = ParseMoney(Attr(element, "dan1")),
+                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1")))
             });
         }
+    }
+
+    // KH carries only base + VAT amounts, not the rate. Recover it from the ratio so later edits
+    // in the UI recompute VAT at the right rate instead of defaulting everything to 21 %.
+    private static VatRateKind InferVatRate(decimal baseCzk, decimal vatCzk)
+    {
+        if (baseCzk <= 0m)
+        {
+            return VatRateKind.Standard21;
+        }
+
+        return (vatCzk / baseCzk) switch
+        {
+            < 0.06m => VatRateKind.Zero0,
+            < 0.165m => VatRateKind.Reduced12,
+            _ => VatRateKind.Standard21
+        };
     }
 
     private static DateOnly ParseDate(string value, VatPeriod period)

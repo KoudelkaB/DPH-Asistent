@@ -34,4 +34,27 @@ public sealed class EpoXmlImporterTests
         Assert.Contains(period.Invoices, x => x.EvidenceNumber == "B3");
         Assert.Equal("27082440", imported.Counterparties["CZ27082440"].Ico);
     }
+
+    [Fact]
+    public void Infers_Vat_Rate_From_Base_And_Vat_Amounts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Pisemnost>
+              <DPHKH1 verzePis="03.01">
+                <VetaD d_poddp="20.06.2026" dokument="KH1" k_uladis="DPH" khdph_forma="B" mesic="5" rok="2026"/>
+                <VetaB2 c_evid_dd="STD" dan1="2100" dic_dod="27082440" dppd="12.05.2026" zakl_dane1="10000" />
+                <VetaB2 c_evid_dd="RED" dan1="1200" dic_dod="27082440" dppd="12.05.2026" zakl_dane1="10000" />
+              </DPHKH1>
+            </Pisemnost>
+            """);
+
+        var imported = new ImportedEpoData();
+        new EpoXmlImporter().ImportFile(path, imported);
+
+        var invoices = Assert.Single(imported.Periods).Invoices;
+        Assert.Equal(VatRateKind.Standard21, invoices.Single(x => x.EvidenceNumber == "STD").VatRate);
+        Assert.Equal(VatRateKind.Reduced12, invoices.Single(x => x.EvidenceNumber == "RED").VatRate);
+    }
 }

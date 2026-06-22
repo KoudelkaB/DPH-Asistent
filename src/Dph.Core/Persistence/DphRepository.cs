@@ -1,3 +1,4 @@
+using System.Globalization;
 using Dph.Core.Domain;
 using Microsoft.Data.Sqlite;
 
@@ -223,7 +224,7 @@ public sealed class DphRepository(string databasePath)
                 Id = reader.GetInt64(reader.GetOrdinal("id")),
                 Year = reader.GetInt32(reader.GetOrdinal("year")),
                 Month = reader.GetInt32(reader.GetOrdinal("month")),
-                SubmissionDate = DateOnly.Parse(Text(reader, "submission_date")),
+                SubmissionDate = DateOnly.Parse(Text(reader, "submission_date"), CultureInfo.InvariantCulture),
                 FormType = Text(reader, "form_type"),
                 ImportedAt = ParseDateTimeOffset(NullableText(reader, "imported_at")),
                 ExportedAt = ParseDateTimeOffset(NullableText(reader, "exported_at"))
@@ -331,9 +332,9 @@ public sealed class DphRepository(string databasePath)
                 CounterpartyName = Text(reader, "counterparty_name"),
                 CounterpartyDic = NullableText(reader, "counterparty_dic"),
                 EvidenceNumber = Text(reader, "evidence_number"),
-                TaxableSupplyDate = DateOnly.Parse(Text(reader, "taxable_supply_date")),
-                TaxBaseCzk = decimal.Parse(Text(reader, "tax_base_czk")),
-                VatCzk = decimal.Parse(Text(reader, "vat_czk")),
+                TaxableSupplyDate = DateOnly.Parse(Text(reader, "taxable_supply_date"), CultureInfo.InvariantCulture),
+                TaxBaseCzk = ParseDecimal(Text(reader, "tax_base_czk")),
+                VatCzk = ParseDecimal(Text(reader, "vat_czk")),
                 Currency = Text(reader, "currency"),
                 ForeignAmount = NullableDecimal(reader, "foreign_amount"),
                 ExchangeRate = NullableDecimal(reader, "exchange_rate"),
@@ -371,11 +372,11 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$counterparty_dic", invoice.CounterpartyDic);
         Add(command, "$evidence_number", invoice.EvidenceNumber);
         Add(command, "$taxable_supply_date", invoice.TaxableSupplyDate.ToString("yyyy-MM-dd"));
-        Add(command, "$tax_base_czk", invoice.TaxBaseCzk.ToString());
-        Add(command, "$vat_czk", invoice.VatCzk.ToString());
+        Add(command, "$tax_base_czk", invoice.TaxBaseCzk.ToString(CultureInfo.InvariantCulture));
+        Add(command, "$vat_czk", invoice.VatCzk.ToString(CultureInfo.InvariantCulture));
         Add(command, "$currency", invoice.Currency);
-        Add(command, "$foreign_amount", invoice.ForeignAmount?.ToString());
-        Add(command, "$exchange_rate", invoice.ExchangeRate?.ToString());
+        Add(command, "$foreign_amount", invoice.ForeignAmount?.ToString(CultureInfo.InvariantCulture));
+        Add(command, "$exchange_rate", invoice.ExchangeRate?.ToString(CultureInfo.InvariantCulture));
         Add(command, "$vat_rate", invoice.VatRate.ToString());
         Add(command, "$partial_deduction", invoice.PartialDeduction ? 1 : 0);
         Add(command, "$note", invoice.Note);
@@ -422,7 +423,7 @@ public sealed class DphRepository(string databasePath)
             """;
         Add(command, "$id", invoice.Id);
         Add(command, "$evidence_number", invoice.EvidenceNumber);
-        Add(command, "$invoice_scope", InvoiceReferenceScope(invoice.Kind));
+        Add(command, "$invoice_scope", invoice.Kind.ReferenceScope());
         Add(command, "$counterparty_id", invoice.CounterpartyId);
         Add(command, "$counterparty_dic", string.IsNullOrWhiteSpace(invoice.CounterpartyDic) ? null : invoice.CounterpartyDic);
         Add(command, "$counterparty_name", string.IsNullOrWhiteSpace(invoice.CounterpartyName) ? null : invoice.CounterpartyName);
@@ -541,16 +542,18 @@ public sealed class DphRepository(string databasePath)
         => reader.IsDBNull(reader.GetOrdinal(name)) ? null : reader.GetInt64(reader.GetOrdinal(name));
 
     private static decimal? NullableDecimal(SqliteDataReader reader, string name)
-        => reader.IsDBNull(reader.GetOrdinal(name)) ? null : decimal.Parse(reader.GetString(reader.GetOrdinal(name)));
+        => reader.IsDBNull(reader.GetOrdinal(name)) ? null : ParseDecimal(reader.GetString(reader.GetOrdinal(name)));
+
+    // Tolerant of legacy rows persisted under a comma-decimal culture (e.g. cs-CZ "1234,56").
+    // decimal.ToString never emits group separators, so values carry at most one decimal mark.
+    private static decimal ParseDecimal(string value)
+        => decimal.Parse(value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture);
 
     private static bool Bool(SqliteDataReader reader, string name)
         => !reader.IsDBNull(reader.GetOrdinal(name)) && reader.GetInt64(reader.GetOrdinal(name)) != 0;
 
     private static DateTimeOffset? ParseDateTimeOffset(string? value)
-        => DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
-
-    private static string InvoiceReferenceScope(InvoiceKind kind)
-        => kind == InvoiceKind.IssuedDomestic ? "Issued" : "Received";
+        => DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed) ? parsed : null;
 }
 
 public sealed record InvoiceReferenceDuplicate(long InvoiceId, int Year, int Month)

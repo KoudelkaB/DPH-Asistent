@@ -105,6 +105,39 @@ public sealed class EpoXmlExporterTests
         Assert.Equal("A", vetaB2.Attribute("pomer")?.Value);
     }
 
+    [Fact]
+    public void Net_Tax_Equals_Difference_Of_Reported_Whole_Crown_Lines()
+    {
+        // Output VAT 1.40, input VAT 0.50: rounding each line independently gives 1 and 1.
+        // The declared net must be 1 - 1 = 0, not WholeCrowns(0.90) = 1 (which EPO would reject).
+        var exporter = new EpoXmlExporter();
+        var document = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "OUT-1",
+                TaxableSupplyDate = new DateOnly(2026, 6, 10),
+                TaxBaseCzk = 6.67m,
+                VatCzk = 1.40m
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "IN-1",
+                TaxableSupplyDate = new DateOnly(2026, 6, 11),
+                TaxBaseCzk = 2.38m,
+                VatCzk = 0.50m
+            }
+        });
+
+        var veta6 = document.Descendants("Veta6").Single();
+        var due = int.Parse(veta6.Attribute("dan_zocelk")!.Value);
+        var deduction = int.Parse(veta6.Attribute("odp_zocelk")!.Value);
+        Assert.Equal(due - deduction, int.Parse(veta6.Attribute("dano_da")!.Value));
+        Assert.Equal("0", veta6.Attribute("dano_da")!.Value);
+    }
+
     private static TaxSubject Subject() => new()
     {
         Dic = "7503012671",

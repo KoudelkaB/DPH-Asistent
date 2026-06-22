@@ -20,3 +20,10 @@ public enum VatRateKind
     Reduced12,
     Zero0
 }
+
+public static class InvoiceKindExtensions
+{
+    // "Issued" vs "Received" bucket used to scope duplicate-document checks.
+    public static string ReferenceScope(this InvoiceKind kind)
+        => kind == InvoiceKind.IssuedDomestic ? "Issued" : "Received";
+}
