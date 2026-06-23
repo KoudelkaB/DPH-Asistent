@@ -204,7 +204,17 @@
                                                 <TextBox Grid.Column="6" Text="{Binding VatCzk, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <TextBox Grid.Column="7" Text="{Binding GrossCzk, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <ComboBox Grid.Column="8" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
-                                                <CheckBox Grid.Column="9" IsChecked="{Binding PartialDeduction}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                <!-- Tooltip na wrapperu: disablovaný CheckBox nepřijímá pointer eventy, takže ToolTip.Tip
+                                                     na něm samotném by se nikdy nezobrazil. Wrapper zůstává enabled. -->
+                                                <Border Grid.Column="9"
+                                                        IsVisible="{Binding ShowPartialDeduction}"
+                                                        ToolTip.Tip="{Binding PartialDeductionTooltip}"
+                                                        Background="Transparent"
+                                                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                    <CheckBox IsChecked="{Binding PartialDeduction}"
+                                                              IsEnabled="{Binding IsPartialDeductionEnabled}"
+                                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
                                                 <TextBox Grid.Column="10" Text="{Binding Currency}"/>
                                                 <TextBox Grid.Column="11" Text="{Binding ForeignAmount}"/>
                                                 <TextBox Grid.Column="12" Text="{Binding Note}"/>

@@ -2,6 +2,7 @@ using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dph.Core.Calculations;
 using Dph.Core.Domain;
+using Dph.Core.Epo;
 
 namespace Dph.App.ViewModels;
 
@@ -22,9 +23,20 @@ public partial class InvoiceLineViewModel : ViewModelBase
 
     public string[] VatRateOptions { get; } = ["21", "12", "0"];
 
+    // Poměrný/krácený odpočet (atribut pomer v KH) dává smysl jen u přijaté tuzemské faktury,
+    // a do XML se promítne až nad detailním limitem KH. U vydaných a reverse je strukturálně
+    // bezpředmětný, pod limitem nemá vliv na XML – viz EpoXmlExporter.VetaB2.
+    private static readonly decimal PartialDeductionLimitCzk = EpoTaxFormDefinition.Current.ControlStatementDetailLimitCzk;
+
     [ObservableProperty] private long id;
     [ObservableProperty] private long periodId;
-    [ObservableProperty] private string kind = "Přijatá";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowPartialDeduction))]
+    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
+    private string kind = "Přijatá";
+
     [ObservableProperty] private long? counterpartyId;
     [ObservableProperty] private string counterpartyName = "";
     [ObservableProperty] private string counterpartyDic = "";
@@ -32,9 +44,35 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private string taxableSupplyDate = DateOnly.FromDateTime(DateTime.Today).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     [ObservableProperty] private string taxBaseCzk = "0";
     [ObservableProperty] private string vatCzk = "0";
-    [ObservableProperty] private string grossCzk = "0";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
+    private string grossCzk = "0";
+
     [ObservableProperty] private string vatRate = "21";
     [ObservableProperty] private bool partialDeduction;
+
+    // Checkbox "Část." zobrazujeme jen u přijaté tuzemské faktury – jinde je bezpředmětný.
+    public bool ShowPartialDeduction => ParseKind(Kind) == InvoiceKind.ReceivedDomesticWithVat;
+
+    // Povolený jen nad limitem KH; pod limitem necháváme uloženou hodnotu, ale needitovatelnou.
+    public bool IsPartialDeductionEnabled
+        => ShowPartialDeduction && ParseDecimal(GrossCzk) > PartialDeductionLimitCzk;
+
+    public string PartialDeductionTooltip => IsPartialDeductionEnabled
+        ? "Krácený / poměrný odpočet – v kontrolním hlášení nastaví pomer=A."
+        : $"Pod limitem KH ({PartialDeductionLimitCzk:0} Kč vč. DPH) se poměrný odpočet do XML nepromítá.";
+
+    // U vydané a reverse faktury je poměrný odpočet bezpředmětný – vyčistíme uložený příznak,
+    // aby nezůstal viset z dřívějška. Pod limitem hodnotu naopak zachováváme (jen zneaktivníme).
+    partial void OnKindChanged(string value)
+    {
+        if (ParseKind(value) != InvoiceKind.ReceivedDomesticWithVat && PartialDeduction)
+        {
+            PartialDeduction = false;
+        }
+    }
     [ObservableProperty] private string currency = "CZK";
     [ObservableProperty] private string foreignAmount = "";
     [ObservableProperty] private string exchangeRate = "";
