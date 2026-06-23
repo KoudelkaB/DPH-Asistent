@@ -149,6 +149,54 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
+    public void Standard_Rate_Deduction_Does_Not_Emit_Lone_Reduced_Rate_Value()
+    {
+        // ř.41 (snížená sazba) se nesmí objevit jako osamocená hodnota – EPO hlásí kód 48.
+        var exporter = new EpoXmlExporter();
+        var document = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "IN-21",
+                TaxableSupplyDate = new DateOnly(2026, 6, 11),
+                TaxBaseCzk = 1_000m,
+                VatCzk = 210m
+            }
+        });
+
+        var veta4 = document.Descendants("Veta4").Single();
+        Assert.Equal("1000", veta4.Attribute("pln23")?.Value);
+        Assert.Equal("210", veta4.Attribute("odp_tuz23_nar")?.Value);
+        Assert.Null(veta4.Attribute("pln5"));
+        Assert.Null(veta4.Attribute("odp_tuz5_nar"));
+    }
+
+    [Fact]
+    public void Reduced_Rate_Domestic_Deduction_Maps_To_Row_41_As_A_Pair()
+    {
+        var exporter = new EpoXmlExporter();
+        var document = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "IN-12",
+                TaxableSupplyDate = new DateOnly(2026, 6, 11),
+                TaxBaseCzk = 1_000m,
+                VatCzk = 120m,
+                VatRate = VatRateKind.Reduced12
+            }
+        });
+
+        var veta4 = document.Descendants("Veta4").Single();
+        Assert.Equal("1000", veta4.Attribute("pln5")?.Value);
+        Assert.Equal("120", veta4.Attribute("odp_tuz5_nar")?.Value);
+        Assert.Null(veta4.Attribute("pln23"));
+        Assert.Equal("120", veta4.Attribute("odp_sum_nar")?.Value);
+    }
+
+    [Fact]
     public void Keeps_Imported_B3_Summary_As_B3_Even_Above_Detail_Limit()
     {
         var exporter = new EpoXmlExporter();
@@ -221,6 +269,60 @@ public sealed class EpoXmlExporterTests
         var deduction = int.Parse(veta6.Attribute("odp_zocelk")!.Value);
         Assert.Equal(due - deduction, int.Parse(veta6.Attribute("dano_da")!.Value));
         Assert.Equal("0", veta6.Attribute("dano_da")!.Value);
+    }
+
+    [Fact]
+    public void Corrective_Form_Type_Sets_Opravne_Flag_On_Both_Documents()
+    {
+        var exporter = new EpoXmlExporter();
+        var subject = Subject();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+        var invoices = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 1_000m,
+                VatCzk = 210m
+            }
+        };
+
+        var dph = exporter.ExportVatReturn(subject, period, invoices, "O");
+        var kh = exporter.ExportControlStatement(subject, period, invoices, "O");
+
+        Assert.Equal("O", dph.Descendants("VetaD").Single().Attribute("dapdph_forma")?.Value);
+        Assert.Equal("O", kh.Descendants("VetaD").Single().Attribute("khdph_forma")?.Value);
+    }
+
+    [Fact]
+    public void Defaults_To_Regular_Form_Type_B()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5 };
+        var dph = exporter.ExportVatReturn(Subject(), period, System.Array.Empty<InvoiceLine>());
+
+        Assert.Equal("B", dph.Descendants("VetaD").Single().Attribute("dapdph_forma")?.Value);
+    }
+
+    [Fact]
+    public void Net_Tax_Whole_Crowns_Matches_Declared_Liability()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 6 };
+        var invoices = new[]
+        {
+            new InvoiceLine { Kind = InvoiceKind.IssuedDomestic, EvidenceNumber = "O1", TaxableSupplyDate = new DateOnly(2026, 6, 10), TaxBaseCzk = 10_000m, VatCzk = 2_100m },
+            new InvoiceLine { Kind = InvoiceKind.ReceivedDomesticWithVat, EvidenceNumber = "I1", TaxableSupplyDate = new DateOnly(2026, 6, 11), TaxBaseCzk = 1_000m, VatCzk = 210m }
+        };
+
+        var net = exporter.ComputeNetTaxWholeCrowns(invoices);
+        var veta6 = exporter.ExportVatReturn(Subject(), period, invoices).Descendants("Veta6").Single();
+
+        Assert.Equal(1_890, net);
+        Assert.Equal("1890", veta6.Attribute("dano_da")?.Value);
     }
 
     private static TaxSubject Subject() => new()

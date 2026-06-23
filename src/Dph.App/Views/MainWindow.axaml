@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Dph.App.ViewModels"
         xmlns:domain="using:Dph.Core.Domain"
+        xmlns:epo="using:Dph.Core.Epo"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
@@ -22,16 +23,53 @@
 
     <Grid RowDefinitions="Auto,* ,Auto" Background="#F4F6F8">
         <Border Grid.Row="0" Background="#1F2937" Padding="14,10">
-            <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
                 <TextBlock Text="DPH Assistant" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
                 <TextBlock Grid.Column="1" Text="{Binding SummaryText}" Foreground="#D1D5DB" Margin="18,0,0,0" VerticalAlignment="Center"/>
                 <Button Grid.Column="2"
+                        Command="{Binding CopyAmountToPayCommand}"
+                        Background="#F59E0B"
+                        Foreground="#1F2937"
+                        BorderThickness="0"
+                        CornerRadius="4"
+                        Padding="12,5"
+                        Margin="0,0,10,0"
+                        VerticalAlignment="Center"
+                        Cursor="Hand"
+                        ToolTip.Tip="Klikni pro zkopírování částky k zaplacení do schránky">
+                    <TextBlock Text="{Binding AmountToPayText}" FontWeight="Bold" FontSize="14"/>
+                    <Button.Styles>
+                        <Style Selector="Button:pointerover /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#FBBF24"/>
+                            <Setter Property="TextElement.Foreground" Value="#1F2937"/>
+                        </Style>
+                        <Style Selector="Button:pressed /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#D97706"/>
+                            <Setter Property="TextElement.Foreground" Value="#1F2937"/>
+                        </Style>
+                    </Button.Styles>
+                </Button>
+                <Button Grid.Column="3"
                         Command="{Binding ExportXmlCommand}"
                         Content="Export XML"
                         Background="#F9FAFB"
                         Foreground="#111827"
                         BorderBrush="#CBD5E1"
-                        Padding="14,6"/>
+                        Padding="14,6">
+                    <Button.Styles>
+                        <!-- Bez explicitního pointerover/pressed by se na tmavé liště tlačítko ztratilo. -->
+                        <Style Selector="Button:pointerover /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#E5E7EB"/>
+                            <Setter Property="TextElement.Foreground" Value="#111827"/>
+                            <Setter Property="BorderBrush" Value="#9CA3AF"/>
+                        </Style>
+                        <Style Selector="Button:pressed /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#D1D5DB"/>
+                            <Setter Property="TextElement.Foreground" Value="#111827"/>
+                            <Setter Property="BorderBrush" Value="#9CA3AF"/>
+                        </Style>
+                    </Button.Styles>
+                </Button>
             </Grid>
         </Border>
 
@@ -57,7 +95,7 @@
 
                     <Grid Grid.Column="1" RowDefinitions="Auto,* ,Auto" RowSpacing="10">
                         <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="10">
-                            <Grid ColumnDefinitions="90,120,90,120,90,120,90,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                            <Grid ColumnDefinitions="90,120,90,120,90,120,90,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                                 <TextBlock Text="DIČ" VerticalAlignment="Center"/>
                                 <TextBox Grid.Column="1" Text="{Binding TaxSubject.Dic}"/>
                                 <TextBlock Grid.Column="2" Text="Jméno" VerticalAlignment="Center"/>
@@ -75,6 +113,45 @@
                                 <TextBox Grid.Row="1" Grid.Column="5" Text="{Binding TaxSubject.City}"/>
                                 <TextBlock Grid.Row="1" Grid.Column="6" Text="PSČ" VerticalAlignment="Center"/>
                                 <TextBox Grid.Row="1" Grid.Column="7" Text="{Binding TaxSubject.PostalCode}"/>
+
+                                <TextBlock Grid.Row="2" Text="Fin. úřad" VerticalAlignment="Center"
+                                           ToolTip.Tip="Cílový finanční úřad (c_ufo). Doplní se z ARES, nebo vyber ze seznamu."/>
+                                <ComboBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                          HorizontalAlignment="Stretch"
+                                          ItemsSource="{Binding TaxOffices}"
+                                          SelectedItem="{Binding SelectedTaxOffice}"
+                                          DropDownOpened="OnTaxOfficeDropDownOpened">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="epo:TaxOffice">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                                <TextBlock Grid.Row="2" Grid.Column="4" Text="Úz. prac." VerticalAlignment="Center"
+                                           ToolTip.Tip="Územní pracoviště (c_pracufo) – seznam podle vybraného finančního úřadu."/>
+                                <ComboBox Grid.Row="2" Grid.Column="5" Grid.ColumnSpan="3"
+                                          HorizontalAlignment="Stretch"
+                                          ItemsSource="{Binding AvailableWorkplaces}"
+                                          SelectedItem="{Binding SelectedWorkplace}"
+                                          DropDownOpened="OnTaxOfficeDropDownOpened">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="epo:TaxOfficeWorkplace">
+                                            <TextBlock Text="{Binding Name}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="3" Text="IČO" VerticalAlignment="Center"/>
+                                <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding TaxSubject.Ico}"/>
+                                <Button Grid.Row="3" Grid.Column="2" Grid.ColumnSpan="2"
+                                        Command="{Binding FillTaxSubjectFromAresCommand}"
+                                        Content="Doplnit z ARES"
+                                        HorizontalAlignment="Left"
+                                        ToolTip.Tip="Podle IČO (nebo DIČ právnické osoby) doplní z ARES prázdné údaje poplatníka včetně cílového finančního úřadu (c_ufo)."/>
+                                <TextBlock Grid.Row="3" Grid.Column="4" Text="Telefon" VerticalAlignment="Center"/>
+                                <TextBox Grid.Row="3" Grid.Column="5" Text="{Binding TaxSubject.Phone}"/>
+                                <TextBlock Grid.Row="3" Grid.Column="6" Text="Datová schr." VerticalAlignment="Center"/>
+                                <TextBox Grid.Row="3" Grid.Column="7" Text="{Binding TaxSubject.DataBoxId}"/>
                             </Grid>
                         </Border>
 
@@ -86,7 +163,7 @@
                                     <Button Grid.Column="2" Command="{Binding DeleteSelectedInvoiceCommand}" Content="Smazat"/>
                                 </Grid>
 
-                                <Grid Grid.Row="1" ColumnDefinitions="145,150,110,115,100,90,70,70,58,80,90,*" ColumnSpacing="6">
+                                <Grid Grid.Row="1" ColumnDefinitions="145,150,110,115,100,90,70,90,70,58,80,90,*" ColumnSpacing="6">
                                     <TextBlock Text="Typ"/>
                                     <TextBlock Grid.Column="1" Text="Subjekt"/>
                                     <TextBlock Grid.Column="2" Text="DIČ"/>
@@ -94,11 +171,12 @@
                                     <TextBlock Grid.Column="4" Text="DUZP"/>
                                     <TextBlock Grid.Column="5" Text="Základ"/>
                                     <TextBlock Grid.Column="6" Text="DPH"/>
-                                    <TextBlock Grid.Column="7" Text="Sazba"/>
-                                    <TextBlock Grid.Column="8" Text="Část."/>
-                                    <TextBlock Grid.Column="9" Text="Měna"/>
-                                    <TextBlock Grid.Column="10" Text="Cizí částka"/>
-                                    <TextBlock Grid.Column="11" Text="Poznámka"/>
+                                    <TextBlock Grid.Column="7" Text="S DPH"/>
+                                    <TextBlock Grid.Column="8" Text="Sazba"/>
+                                    <TextBlock Grid.Column="9" Text="Část."/>
+                                    <TextBlock Grid.Column="10" Text="Měna"/>
+                                    <TextBlock Grid.Column="11" Text="Cizí částka"/>
+                                    <TextBlock Grid.Column="12" Text="Poznámka"/>
                                 </Grid>
 
                                 <ListBox Grid.Row="2"
@@ -116,7 +194,7 @@
                                     </ListBox.Styles>
                                     <ListBox.ItemTemplate>
                                         <DataTemplate x:DataType="vm:InvoiceLineViewModel">
-                                            <Grid ColumnDefinitions="145,150,110,115,100,90,70,70,58,80,90,*" ColumnSpacing="6" Margin="0,2">
+                                            <Grid ColumnDefinitions="145,150,110,115,100,90,70,90,70,58,80,90,*" ColumnSpacing="6" Margin="0,2">
                                                 <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="135"/>
                                                 <TextBlock Grid.Column="1" Text="{Binding CounterpartyName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                                                 <TextBox Grid.Column="2" Text="{Binding CounterpartyDic}"/>
@@ -124,11 +202,12 @@
                                                 <TextBox Grid.Column="4" Text="{Binding TaxableSupplyDate}"/>
                                                 <TextBox Grid.Column="5" Text="{Binding TaxBaseCzk, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <TextBox Grid.Column="6" Text="{Binding VatCzk, UpdateSourceTrigger=PropertyChanged}"/>
-                                                <ComboBox Grid.Column="7" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
-                                                <CheckBox Grid.Column="8" IsChecked="{Binding PartialDeduction}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                                <TextBox Grid.Column="9" Text="{Binding Currency}"/>
-                                                <TextBox Grid.Column="10" Text="{Binding ForeignAmount}"/>
-                                                <TextBox Grid.Column="11" Text="{Binding Note}"/>
+                                                <TextBox Grid.Column="7" Text="{Binding GrossCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <ComboBox Grid.Column="8" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
+                                                <CheckBox Grid.Column="9" IsChecked="{Binding PartialDeduction}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                <TextBox Grid.Column="10" Text="{Binding Currency}"/>
+                                                <TextBox Grid.Column="11" Text="{Binding ForeignAmount}"/>
+                                                <TextBox Grid.Column="12" Text="{Binding Note}"/>
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -175,11 +254,11 @@
                     <Border Grid.Column="1" Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="14">
                         <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
                             <TextBlock Text="Název" VerticalAlignment="Center"/>
-                            <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.Name}"/>
+                            <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.Name, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Grid.Row="1" Text="IČO" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SelectedCounterparty.Ico}"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SelectedCounterparty.Ico, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Grid.Row="2" Text="DIČ" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedCounterparty.Dic}"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedCounterparty.Dic, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Grid.Row="3" Text="Stát / role" VerticalAlignment="Center"/>
                             <Grid Grid.Row="3" Grid.Column="1" ColumnDefinitions="100,180,*" ColumnSpacing="8">
                                 <TextBox Text="{Binding SelectedCounterparty.CountryCode}"/>

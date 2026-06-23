@@ -32,6 +32,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private string taxableSupplyDate = DateOnly.FromDateTime(DateTime.Today).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     [ObservableProperty] private string taxBaseCzk = "0";
     [ObservableProperty] private string vatCzk = "0";
+    [ObservableProperty] private string grossCzk = "0";
     [ObservableProperty] private string vatRate = "21";
     [ObservableProperty] private bool partialDeduction;
     [ObservableProperty] private string currency = "CZK";
@@ -39,25 +40,44 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private string exchangeRate = "";
     [ObservableProperty] private string note = "";
 
-    public static InvoiceLineViewModel FromDomain(InvoiceLine invoice) => new()
+    public static InvoiceLineViewModel FromDomain(InvoiceLine invoice)
     {
-        Id = invoice.Id,
-        PeriodId = invoice.PeriodId,
-        Kind = KindText(invoice.Kind),
-        CounterpartyId = invoice.CounterpartyId,
-        CounterpartyName = invoice.CounterpartyName,
-        CounterpartyDic = invoice.CounterpartyDic ?? "",
-        EvidenceNumber = invoice.EvidenceNumber,
-        TaxableSupplyDate = invoice.TaxableSupplyDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-        TaxBaseCzk = Format(invoice.TaxBaseCzk),
-        VatCzk = Format(invoice.VatCzk),
-        VatRate = RateText(invoice.VatRate),
-        PartialDeduction = invoice.PartialDeduction,
-        Currency = invoice.Currency,
-        ForeignAmount = invoice.ForeignAmount is null ? "" : Format(invoice.ForeignAmount.Value),
-        ExchangeRate = invoice.ExchangeRate is null ? "" : Format(invoice.ExchangeRate.Value),
-        Note = invoice.Note ?? ""
-    };
+        var viewModel = new InvoiceLineViewModel
+        {
+            Id = invoice.Id,
+            PeriodId = invoice.PeriodId,
+            Kind = KindText(invoice.Kind),
+            CounterpartyId = invoice.CounterpartyId,
+            CounterpartyName = invoice.CounterpartyName,
+            CounterpartyDic = invoice.CounterpartyDic ?? "",
+            EvidenceNumber = invoice.EvidenceNumber,
+            TaxableSupplyDate = invoice.TaxableSupplyDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            PartialDeduction = invoice.PartialDeduction,
+            Currency = invoice.Currency,
+            ForeignAmount = invoice.ForeignAmount is null ? "" : Format(invoice.ForeignAmount.Value),
+            ExchangeRate = invoice.ExchangeRate is null ? "" : Format(invoice.ExchangeRate.Value),
+            Note = invoice.Note ?? ""
+        };
+
+        // Bez přepočtu sazbou – uložená daň nemusí přesně odpovídat základ × sazba (zaokrouhlení,
+        // import z KH) a nesmí se přepsat.
+        viewModel.InitializeAmounts(
+            RateText(invoice.VatRate),
+            Format(invoice.TaxBaseCzk),
+            Format(invoice.VatCzk),
+            Format(invoice.TaxBaseCzk + invoice.VatCzk));
+        return viewModel;
+    }
+
+    private void InitializeAmounts(string rate, string baseCzk, string vat, string gross)
+    {
+        _isRecalculating = true;
+        VatRate = rate;
+        TaxBaseCzk = baseCzk;
+        VatCzk = vat;
+        GrossCzk = gross;
+        _isRecalculating = false;
+    }
 
     public InvoiceLine ToDomain() => new()
     {
@@ -79,6 +99,8 @@ public partial class InvoiceLineViewModel : ViewModelBase
         Note = Note.NullIfWhiteSpace()
     };
 
+    // Základ, DPH i částka s DPH jdou zadat libovolně; ostatní dvě se dopočítají podle sazby.
+    // _isRecalculating brání zacyklení, protože každé přepsání zase spustí tyto handlery.
     partial void OnTaxBaseCzkChanged(string value)
     {
         if (_isRecalculating)
@@ -87,7 +109,10 @@ public partial class InvoiceLineViewModel : ViewModelBase
         }
 
         _isRecalculating = true;
-        VatCzk = Format(VatCalculator.Money(ParseDecimal(value) * ParseRatePercent(VatRate)));
+        var baseCzk = ParseDecimal(value);
+        var vat = VatCalculator.Money(baseCzk * ParseRatePercent(VatRate));
+        VatCzk = Format(vat);
+        GrossCzk = Format(baseCzk + vat);
         _isRecalculating = false;
     }
 
@@ -98,14 +123,36 @@ public partial class InvoiceLineViewModel : ViewModelBase
             return;
         }
 
+        _isRecalculating = true;
+        var vat = ParseDecimal(value);
         var rate = ParseRatePercent(VatRate);
-        if (rate == 0)
+        if (rate != 0)
+        {
+            var baseCzk = VatCalculator.Money(vat / rate);
+            TaxBaseCzk = Format(baseCzk);
+            GrossCzk = Format(baseCzk + vat);
+        }
+        else
+        {
+            // Při nulové sazbě nelze ze daně dopočítat základ; aktualizujeme aspoň částku s DPH.
+            GrossCzk = Format(ParseDecimal(TaxBaseCzk) + vat);
+        }
+
+        _isRecalculating = false;
+    }
+
+    partial void OnGrossCzkChanged(string value)
+    {
+        if (_isRecalculating)
         {
             return;
         }
 
         _isRecalculating = true;
-        TaxBaseCzk = Format(VatCalculator.Money(ParseDecimal(value) / rate));
+        var gross = ParseDecimal(value);
+        var baseCzk = VatCalculator.Money(gross / (1m + ParseRatePercent(VatRate)));
+        TaxBaseCzk = Format(baseCzk);
+        VatCzk = Format(VatCalculator.Money(gross - baseCzk));
         _isRecalculating = false;
     }
 
@@ -117,7 +164,10 @@ public partial class InvoiceLineViewModel : ViewModelBase
         }
 
         _isRecalculating = true;
-        VatCzk = Format(VatCalculator.Money(ParseDecimal(TaxBaseCzk) * ParseRatePercent(value)));
+        var baseCzk = ParseDecimal(TaxBaseCzk);
+        var vat = VatCalculator.Money(baseCzk * ParseRatePercent(value));
+        VatCzk = Format(vat);
+        GrossCzk = Format(baseCzk + vat);
         _isRecalculating = false;
     }
 

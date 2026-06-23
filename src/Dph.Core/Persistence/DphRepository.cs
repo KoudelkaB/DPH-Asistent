@@ -50,6 +50,7 @@ public sealed class DphRepository(string databasePath)
                 form_type text not null,
                 imported_at text null,
                 exported_at text null,
+                changed_at text null,
                 unique(year, month)
             );
             create table if not exists invoice_lines (
@@ -92,6 +93,7 @@ public sealed class DphRepository(string databasePath)
             """, cancellationToken);
         await EnsureColumnAsync(connection, "periods", "imported_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "periods", "exported_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "periods", "changed_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "invoice_lines", "partial_deduction", "integer not null default 0", cancellationToken);
     }
 
@@ -227,7 +229,8 @@ public sealed class DphRepository(string databasePath)
                 SubmissionDate = DateOnly.Parse(Text(reader, "submission_date"), CultureInfo.InvariantCulture),
                 FormType = Text(reader, "form_type"),
                 ImportedAt = ParseDateTimeOffset(NullableText(reader, "imported_at")),
-                ExportedAt = ParseDateTimeOffset(NullableText(reader, "exported_at"))
+                ExportedAt = ParseDateTimeOffset(NullableText(reader, "exported_at")),
+                ChangedAt = ParseDateTimeOffset(NullableText(reader, "changed_at"))
             });
         }
 
@@ -239,13 +242,14 @@ public sealed class DphRepository(string databasePath)
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            insert into periods (id, year, month, submission_date, form_type, imported_at, exported_at)
-            values ($id, $year, $month, $submission_date, $form_type, $imported_at, $exported_at)
+            insert into periods (id, year, month, submission_date, form_type, imported_at, exported_at, changed_at)
+            values ($id, $year, $month, $submission_date, $form_type, $imported_at, $exported_at, $changed_at)
             on conflict(year, month) do update set
                 submission_date=excluded.submission_date,
                 form_type=excluded.form_type,
                 imported_at=coalesce(excluded.imported_at, periods.imported_at),
-                exported_at=coalesce(excluded.exported_at, periods.exported_at)
+                exported_at=coalesce(excluded.exported_at, periods.exported_at),
+                changed_at=coalesce(excluded.changed_at, periods.changed_at)
             returning id
             """;
         Add(command, "$id", period.Id == 0 ? null : period.Id);
@@ -255,6 +259,7 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$form_type", period.FormType);
         Add(command, "$imported_at", period.ImportedAt?.ToString("O"));
         Add(command, "$exported_at", period.ExportedAt?.ToString("O"));
+        Add(command, "$changed_at", period.ChangedAt?.ToString("O"));
         var id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? period.Id);
         period.Id = id;
         return id;
@@ -274,18 +279,21 @@ public sealed class DphRepository(string databasePath)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "update periods set exported_at=$exported_at where id=$id";
+        // Export odráží aktuální stav, takže příznak změny mizí.
+        command.CommandText = "update periods set exported_at=$exported_at, changed_at=null where id=$id";
         Add(command, "$id", periodId);
         Add(command, "$exported_at", exportedAt.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task ClearPeriodHistoryFlagsAsync(long periodId, CancellationToken cancellationToken = default)
+    // Označí už podané období jako po podání upravené (zachová import/export příznak).
+    public async Task MarkPeriodChangedAsync(long periodId, DateTimeOffset changedAt, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "update periods set imported_at=null, exported_at=null where id=$id";
+        command.CommandText = "update periods set changed_at=$changed_at where id=$id";
         Add(command, "$id", periodId);
+        Add(command, "$changed_at", changedAt.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

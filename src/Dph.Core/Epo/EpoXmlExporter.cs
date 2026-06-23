@@ -10,13 +10,12 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private readonly EpoTaxFormDefinition _definition = definition ?? EpoTaxFormDefinition.Current;
     private readonly VatCalculator _calculator = new();
 
-    public XDocument ExportVatReturn(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices)
+    public XDocument ExportVatReturn(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null)
     {
         var lines = invoices.ToArray();
-        var summary = _calculator.Calculate(lines);
         var dph = new XElement(_definition.VatReturnElement,
             new XAttribute("verzePis", _definition.VatReturnVersion),
-            VatReturnHeader(subject, period),
+            VatReturnHeader(subject, period, formType ?? period.FormType),
             TaxSubjectElement(subject));
 
         // InvoiceKind.ReverseCharge = přijetí služby ze zahraničí, kde daň přiznává příjemce. Řádek
@@ -27,93 +26,120 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         //     (Veta1 p_sl23_z / p_sl5_z).
         // Nárok na odpočet u obojího jde na ř.43/44 (Veta4 nar_zdp / od_zdp). NENÍ to tuzemský režim
         // přenesení §92a (ř.10/11 + KH B1) a do kontrolního hlášení tato plnění NEPATŘÍ.
-        var rc = lines.Where(x => x.Kind == InvoiceKind.ReverseCharge).ToArray();
-        var euStd = RcLine(rc, eu: true, reduced: false);
-        var euRed = RcLine(rc, eu: true, reduced: true);
-        var nonEuStd = RcLine(rc, eu: false, reduced: false);
-        var nonEuRed = RcLine(rc, eu: false, reduced: true);
+        var b = ComputeBuckets(lines);
 
-        var domesticOutputVat = VatCalculator.WholeCrowns(summary.DomesticOutputVat);
+        // Tuzemská plnění dělíme podle sazby na základní (ř.1/40) a sníženou (ř.2/41). Každý řádek
+        // se do XML zapisuje vždy jako dvojice základ+daň – EPO jinak hlásí „je zadána jen jedna
+        // z hodnot“ (kód 48).
         var veta1 = new XElement("Veta1");
-        if (summary.DomesticOutputBase != 0 || summary.DomesticOutputVat != 0)
-        {
-            veta1.Add(
-                A("obrat23", VatCalculator.WholeCrowns(summary.DomesticOutputBase)),
-                A("dan23", domesticOutputVat),
-                A("obrat5", 0),
-                A("dan5", 0));
-        }
-
-        AddOutputRow(veta1, "p_sl23_e", "dan_psl23_e", euStd);     // ř.5  EU služba, základní sazba
-        AddOutputRow(veta1, "p_sl5_e", "dan_psl5_e", euRed);       // ř.6  EU služba, snížená sazba
-        AddOutputRow(veta1, "p_sl23_z", "dan_psl23_z", nonEuStd);  // ř.12 třetí země, základní sazba
-        AddOutputRow(veta1, "p_sl5_z", "dan_psl5_z", nonEuRed);    // ř.13 třetí země, snížená sazba
+        AddRow(veta1, "obrat23", "dan23", b.OutStd);                // ř.1  tuzemsko, základní sazba
+        AddRow(veta1, "obrat5", "dan5", b.OutRed);                  // ř.2  tuzemsko, snížená sazba
+        AddRow(veta1, "p_sl23_e", "dan_psl23_e", b.EuStd);          // ř.5  EU služba, základní sazba
+        AddRow(veta1, "p_sl5_e", "dan_psl5_e", b.EuRed);            // ř.6  EU služba, snížená sazba
+        AddRow(veta1, "p_sl23_z", "dan_psl23_z", b.NonEuStd);       // ř.12 třetí země, základní sazba
+        AddRow(veta1, "p_sl5_z", "dan_psl5_z", b.NonEuRed);         // ř.13 třetí země, snížená sazba
         if (veta1.HasAttributes)
         {
             dph.Add(veta1);
         }
 
-        // ř.43/44 odpočet sčítá EU i třetí zemi podle sazby. Počítáme ze stejných zaokrouhlených
-        // řádků jako výstup (ne z nového součtu), aby ř.62 a ř.63 za reverse charge přesně seděly.
-        var stdDeductBase = euStd.Base + nonEuStd.Base;
-        var stdDeductVat = euStd.Vat + nonEuStd.Vat;
-        var redDeductBase = euRed.Base + nonEuRed.Base;
-        var redDeductVat = euRed.Vat + nonEuRed.Vat;
+        // ř.43/44 odpočet sčítá EU i třetí zemi podle sazby.
+        var stdDeductBase = b.EuStd.Base + b.NonEuStd.Base;
+        var redDeductBase = b.EuRed.Base + b.NonEuRed.Base;
 
-        var domesticInputVat = VatCalculator.WholeCrowns(summary.DomesticInputVat);
         var veta4 = new XElement("Veta4");
-        var hasDeduction = false;
-        if (summary.DomesticInputBase != 0 || summary.DomesticInputVat != 0)
+        AddRow(veta4, "pln23", "odp_tuz23_nar", b.InStd);   // ř.40 odpočet z tuzemských plnění, základní sazba
+        AddRow(veta4, "pln5", "odp_tuz5_nar", b.InRed);     // ř.41 odpočet z tuzemských plnění, snížená sazba
+        var hasDeduction = veta4.HasAttributes;
+
+        if (stdDeductBase != 0 || b.StdDeductVat != 0)
         {
-            // ř.40/41 – odpočet z tuzemských plnění od plátců.
-            veta4.Add(
-                A("pln23", VatCalculator.WholeCrowns(summary.DomesticInputBase)),
-                A("odp_tuz23_nar", domesticInputVat),
-                A("odp_tuz5_nar", 0));
+            veta4.Add(A("nar_zdp23", stdDeductBase), A("od_zdp23", b.StdDeductVat));
             hasDeduction = true;
         }
 
-        if (stdDeductBase != 0 || stdDeductVat != 0)
+        if (redDeductBase != 0 || b.RedDeductVat != 0)
         {
-            veta4.Add(A("nar_zdp23", stdDeductBase), A("od_zdp23", stdDeductVat));
-            hasDeduction = true;
-        }
-
-        if (redDeductBase != 0 || redDeductVat != 0)
-        {
-            veta4.Add(A("nar_zdp5", redDeductBase), A("od_zdp5", redDeductVat));
+            veta4.Add(A("nar_zdp5", redDeductBase), A("od_zdp5", b.RedDeductVat));
             hasDeduction = true;
         }
 
         if (hasDeduction)
         {
             // ř.46 „V plné výši“ = součet odpočtů; musí sednout se součtem výše uvedených řádků.
-            veta4.Add(A("odp_sum_nar", domesticInputVat + stdDeductVat + redDeductVat));
+            veta4.Add(A("odp_sum_nar", b.TaxDeductionWhole));
             dph.Add(veta4);
         }
 
         // ř.62/63/64: počítáme ze zaokrouhlených řádků, aby ř.64 = ř.62 - ř.63 přesně sedělo
         // (EPO si tyto součty přepočítává a jinak by podání odmítlo).
-        var rcOutputVat = euStd.Vat + euRed.Vat + nonEuStd.Vat + nonEuRed.Vat;
-        var taxDueWhole = domesticOutputVat + rcOutputVat;
-        var taxDeductionWhole = domesticInputVat + stdDeductVat + redDeductVat;
-        var netWhole = taxDueWhole - taxDeductionWhole;
         dph.Add(new XElement("Veta6",
-            A("dan_zocelk", taxDueWhole),
-            A("odp_zocelk", taxDeductionWhole),
-            A(netWhole >= 0 ? "dano_da" : "dano_no", Math.Abs(netWhole)),
-            A(netWhole >= 0 ? "dano_no" : "dano_da", 0),
+            A("dan_zocelk", b.TaxDueWhole),
+            A("odp_zocelk", b.TaxDeductionWhole),
+            A(b.NetTaxWhole >= 0 ? "dano_da" : "dano_no", Math.Abs(b.NetTaxWhole)),
+            A(b.NetTaxWhole >= 0 ? "dano_no" : "dano_da", 0),
             A("dano", 0)));
 
         return Wrap(dph);
     }
 
-    private static void AddOutputRow(XElement veta1, string baseAttr, string vatAttr, (long Base, long Vat) row)
+    // Vlastní daňová povinnost v celých korunách (ř.64 přiznání): > 0 = doplatek, < 0 = nadměrný
+    // odpočet. Počítá se přesně jako v DP XML (po řádcích zaokrouhleno na koruny), což je částka,
+    // která se reálně platí – ne haléřový součet z výpočtu.
+    public long ComputeNetTaxWholeCrowns(IEnumerable<InvoiceLine> invoices)
+        => ComputeBuckets(invoices.ToArray()).NetTaxWhole;
+
+    private ReturnBuckets ComputeBuckets(InvoiceLine[] lines)
+    {
+        var rc = lines.Where(x => x.Kind == InvoiceKind.ReverseCharge).ToArray();
+        return new ReturnBuckets(
+            DomesticLine(lines, InvoiceKind.IssuedDomestic, reduced: false),
+            DomesticLine(lines, InvoiceKind.IssuedDomestic, reduced: true),
+            DomesticLine(lines, InvoiceKind.ReceivedDomesticWithVat, reduced: false),
+            DomesticLine(lines, InvoiceKind.ReceivedDomesticWithVat, reduced: true),
+            RcLine(rc, eu: true, reduced: false),
+            RcLine(rc, eu: true, reduced: true),
+            RcLine(rc, eu: false, reduced: false),
+            RcLine(rc, eu: false, reduced: true));
+    }
+
+    // Zaokrouhlené (celé koruny) řádky přiznání. Reverse charge se objevuje na výstupu i v odpočtu,
+    // takže se ve výsledné dani vyruší.
+    private readonly record struct ReturnBuckets(
+        (long Base, long Vat) OutStd,
+        (long Base, long Vat) OutRed,
+        (long Base, long Vat) InStd,
+        (long Base, long Vat) InRed,
+        (long Base, long Vat) EuStd,
+        (long Base, long Vat) EuRed,
+        (long Base, long Vat) NonEuStd,
+        (long Base, long Vat) NonEuRed)
+    {
+        public long StdDeductVat => EuStd.Vat + NonEuStd.Vat;
+        public long RedDeductVat => EuRed.Vat + NonEuRed.Vat;
+        public long TaxDueWhole => OutStd.Vat + OutRed.Vat + EuStd.Vat + EuRed.Vat + NonEuStd.Vat + NonEuRed.Vat;
+        public long TaxDeductionWhole => InStd.Vat + InRed.Vat + StdDeductVat + RedDeductVat;
+        public long NetTaxWhole => TaxDueWhole - TaxDeductionWhole;
+    }
+
+    // Zapíše řádek přiznání jako dvojici základ+daň, a to jen pokud je aspoň jedna hodnota nenulová.
+    private static void AddRow(XElement element, string baseAttr, string vatAttr, (long Base, long Vat) row)
     {
         if (row.Base != 0 || row.Vat != 0)
         {
-            veta1.Add(A(baseAttr, row.Base), A(vatAttr, row.Vat));
+            element.Add(A(baseAttr, row.Base), A(vatAttr, row.Vat));
         }
+    }
+
+    // Whole-crown (base, vat) pro tuzemská plnění daného druhu a sazby (snížená 12 % vs. ostatní).
+    private (long Base, long Vat) DomesticLine(InvoiceLine[] lines, InvoiceKind kind, bool reduced)
+    {
+        var bucket = lines
+            .Where(x => x.Kind == kind && (x.VatRate == VatRateKind.Reduced12) == reduced)
+            .ToArray();
+        return (
+            VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(x => x.TaxBaseCzk))),
+            VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(_calculator.ResolveVat))));
     }
 
     // Whole-crown (base, vat) for one reverse-charge bucket. eu = dodavatel registrovaný v JČS
@@ -141,12 +167,12 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         return dic is { Length: >= 2 } && EuVatPrefixes.Contains(dic[..2]);
     }
 
-    public XDocument ExportControlStatement(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices)
+    public XDocument ExportControlStatement(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null)
     {
         var lines = invoices.ToArray();
         var dph = new XElement(_definition.ControlStatementElement,
             new XAttribute("verzePis", _definition.ControlStatementVersion),
-            ControlStatementHeader(period),
+            ControlStatementHeader(period, formType ?? period.FormType),
             TaxSubjectElement(subject, includeDataBox: true));
 
         // Pouze tuzemská plnění: vydaná (A4/A5) a přijatá s českou DPH (B2/B3). Reverse charge
@@ -224,20 +250,20 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private static bool IsSummary(InvoiceLine invoice, string code)
         => string.Equals(invoice.EvidenceNumber, code, StringComparison.OrdinalIgnoreCase);
 
-    private XElement VatReturnHeader(TaxSubject subject, VatPeriod period) => new("VetaD",
+    private XElement VatReturnHeader(TaxSubject subject, VatPeriod period, string formType) => new("VetaD",
         A("dokument", "DP3"),
         A("k_uladis", "DPH"),
-        A("dapdph_forma", period.FormType),
+        A("dapdph_forma", formType),
         A("mesic", period.Month.ToString("D2", CultureInfo.InvariantCulture)),
         A("rok", period.Year),
         A("d_poddp", Date(period.SubmissionDate)),
         A("typ_platce", "P"),
         A("c_okec", subject.ActivityCode));
 
-    private XElement ControlStatementHeader(VatPeriod period) => new("VetaD",
+    private XElement ControlStatementHeader(VatPeriod period, string formType) => new("VetaD",
         A("dokument", "KH1"),
         A("k_uladis", "DPH"),
-        A("khdph_forma", period.FormType),
+        A("khdph_forma", formType),
         A("mesic", period.Month),
         A("rok", period.Year),
         A("d_poddp", Date(period.SubmissionDate)));

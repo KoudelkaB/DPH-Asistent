@@ -26,6 +26,17 @@ public partial class MainWindow : Window
             viewModel.PickDatabaseBackupTargetAsync = PickDatabaseBackupTargetAsync;
             viewModel.PickDatabaseBackupSourceAsync = PickDatabaseBackupSourceAsync;
             viewModel.ConfirmAsync = ConfirmAsync;
+            viewModel.ConfirmReexportAsync = ConfirmReexportAsync;
+            viewModel.CopyToClipboardAsync = CopyToClipboardAsync;
+        }
+    }
+
+    private async Task CopyToClipboardAsync(string text)
+    {
+        var clipboard = GetTopLevel(this)?.Clipboard;
+        if (clipboard is not null)
+        {
+            await clipboard.SetTextAsync(text);
         }
     }
 
@@ -151,6 +162,69 @@ public partial class MainWindow : Window
         continueButton.Click += (_, _) => dialog.Close(true);
 
         return await dialog.ShowDialog<bool>(this);
+    }
+
+    private void OnTaxOfficeDropDownOpened(object? sender, EventArgs e)
+    {
+        if (DataContext is MainWindowViewModel viewModel)
+        {
+            _ = viewModel.EnsureLiveTaxOfficeCatalogAsync();
+        }
+    }
+
+    private async Task<ReexportChoice> ConfirmReexportAsync(string title, string message)
+    {
+        var cancelButton = new Button { Content = "Zrušit", MinWidth = 92 };
+        var regularButton = new Button { Content = "Řádné přiznání", MinWidth = 130 };
+        var correctiveButton = new Button
+        {
+            Content = "Opravné přiznání",
+            MinWidth = 140,
+            Background = Brushes.Black,
+            Foreground = Brushes.White
+        };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Children = { cancelButton, regularButton, correctiveButton }
+        };
+        Grid.SetRow(buttons, 1);
+
+        var content = new Grid
+        {
+            RowDefinitions = new RowDefinitions("*,Auto"),
+            Margin = new Thickness(18),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = message,
+                    TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Center
+                },
+                buttons
+            }
+        };
+
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 520,
+            Height = 190,
+            MinWidth = 500,
+            MinHeight = 180,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = content
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(ReexportChoice.Cancel);
+        regularButton.Click += (_, _) => dialog.Close(ReexportChoice.Regular);
+        correctiveButton.Click += (_, _) => dialog.Close(ReexportChoice.Corrective);
+
+        return await dialog.ShowDialog<ReexportChoice>(this);
     }
 
     private async void OnOpened(object? sender, EventArgs e)
