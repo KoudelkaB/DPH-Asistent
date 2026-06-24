@@ -124,6 +124,48 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
+    public void Reverse_Charge_Vat_Is_Computed_From_Reported_Whole_Crown_Bases()
+    {
+        var exporter = new EpoXmlExporter();
+        var dph = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 5 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                EvidenceNumber = "KJH0NHOS-0001",
+                CounterpartyDic = "IE4143435AH",
+                TaxableSupplyDate = new DateOnly(2026, 5, 25),
+                TaxBaseCzk = 412.40m,
+                VatCzk = 86.60m
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                EvidenceNumber = "ch_3TWLDZJF",
+                TaxableSupplyDate = new DateOnly(2026, 5, 12),
+                TaxBaseCzk = 207.14m,
+                VatCzk = 43.50m
+            }
+        });
+
+        var veta1 = dph.Descendants("Veta1").Single();
+        Assert.Equal("412", veta1.Attribute("p_sl23_e")?.Value);
+        Assert.Equal("87", veta1.Attribute("dan_psl23_e")?.Value);
+        Assert.Equal("207", veta1.Attribute("p_sl23_z")?.Value);
+        Assert.Equal("43", veta1.Attribute("dan_psl23_z")?.Value);
+
+        var veta4 = dph.Descendants("Veta4").Single();
+        Assert.Equal("619", veta4.Attribute("nar_zdp23")?.Value);
+        Assert.Equal("130", veta4.Attribute("od_zdp23")?.Value);
+        Assert.Equal("130", veta4.Attribute("odp_sum_nar")?.Value);
+
+        var veta6 = dph.Descendants("Veta6").Single();
+        Assert.Equal("130", veta6.Attribute("dan_zocelk")?.Value);
+        Assert.Equal("130", veta6.Attribute("odp_zocelk")?.Value);
+        Assert.Equal("0", veta6.Attribute("dano_da")?.Value);
+    }
+
+    [Fact]
     public void Reduced_Rate_Foreign_Reverse_Charge_Uses_Rows_13_And_44()
     {
         var exporter = new EpoXmlExporter();

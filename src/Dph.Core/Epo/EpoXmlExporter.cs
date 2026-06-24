@@ -44,23 +44,20 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         }
 
         // ř.43/44 odpočet sčítá EU i třetí zemi podle sazby.
-        var stdDeductBase = b.EuStd.Base + b.NonEuStd.Base;
-        var redDeductBase = b.EuRed.Base + b.NonEuRed.Base;
-
         var veta4 = new XElement("Veta4");
         AddRow(veta4, "pln23", "odp_tuz23_nar", b.InStd);   // ř.40 odpočet z tuzemských plnění, základní sazba
         AddRow(veta4, "pln5", "odp_tuz5_nar", b.InRed);     // ř.41 odpočet z tuzemských plnění, snížená sazba
         var hasDeduction = veta4.HasAttributes;
 
-        if (stdDeductBase != 0 || b.StdDeductVat != 0)
+        if (b.StdDeductBase != 0 || b.StdDeductVat != 0)
         {
-            veta4.Add(A("nar_zdp23", stdDeductBase), A("od_zdp23", b.StdDeductVat));
+            veta4.Add(A("nar_zdp23", b.StdDeductBase), A("od_zdp23", b.StdDeductVat));
             hasDeduction = true;
         }
 
-        if (redDeductBase != 0 || b.RedDeductVat != 0)
+        if (b.RedDeductBase != 0 || b.RedDeductVat != 0)
         {
-            veta4.Add(A("nar_zdp5", redDeductBase), A("od_zdp5", b.RedDeductVat));
+            veta4.Add(A("nar_zdp5", b.RedDeductBase), A("od_zdp5", b.RedDeductVat));
             hasDeduction = true;
         }
 
@@ -115,8 +112,10 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         (long Base, long Vat) NonEuStd,
         (long Base, long Vat) NonEuRed)
     {
-        public long StdDeductVat => EuStd.Vat + NonEuStd.Vat;
-        public long RedDeductVat => EuRed.Vat + NonEuRed.Vat;
+        public long StdDeductBase => EuStd.Base + NonEuStd.Base;
+        public long RedDeductBase => EuRed.Base + NonEuRed.Base;
+        public long StdDeductVat => TaxFromReportedBase(StdDeductBase, VatRateKind.Standard21);
+        public long RedDeductVat => TaxFromReportedBase(RedDeductBase, VatRateKind.Reduced12);
         public long TaxDueWhole => OutStd.Vat + OutRed.Vat + EuStd.Vat + EuRed.Vat + NonEuStd.Vat + NonEuRed.Vat;
         public long TaxDeductionWhole => InStd.Vat + InRed.Vat + StdDeductVat + RedDeductVat;
         public long NetTaxWhole => TaxDueWhole - TaxDeductionWhole;
@@ -142,6 +141,31 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
             VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(_calculator.ResolveVat))));
     }
 
+    private static long ReverseChargeVatForReportedBase(long reportedBase, InvoiceLine[] bucket)
+    {
+        if (bucket.Length == 0)
+        {
+            return 0;
+        }
+
+        var rates = bucket.Select(x => x.VatRate).Distinct().ToArray();
+        if (rates.Length == 1)
+        {
+            return TaxFromReportedBase(reportedBase, rates[0]);
+        }
+
+        return VatCalculator.WholeCrowns(VatCalculator.Money(bucket
+            .GroupBy(x => x.VatRate)
+            .Sum(group =>
+            {
+                var groupBase = VatCalculator.WholeCrowns(VatCalculator.Money(group.Sum(x => x.TaxBaseCzk)));
+                return groupBase * VatCalculator.Rate(group.Key);
+            })));
+    }
+
+    private static long TaxFromReportedBase(long reportedBase, VatRateKind rate)
+        => VatCalculator.WholeCrowns(VatCalculator.Money(reportedBase * VatCalculator.Rate(rate)));
+
     // Whole-crown (base, vat) for one reverse-charge bucket. eu = dodavatel registrovaný v JČS
     // (EU prefix DIČ), reduced = snížená sazba (12 %); ostatní (vč. 0 %) spadá do základní.
     private (long Base, long Vat) RcLine(InvoiceLine[] reverseCharge, bool eu, bool reduced)
@@ -149,9 +173,8 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         var bucket = reverseCharge
             .Where(x => IsEuSupplier(x) == eu && (x.VatRate == VatRateKind.Reduced12) == reduced)
             .ToArray();
-        return (
-            VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(x => x.TaxBaseCzk))),
-            VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(_calculator.ResolveVat))));
+        var reportedBase = VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(x => x.TaxBaseCzk)));
+        return (reportedBase, ReverseChargeVatForReportedBase(reportedBase, bucket));
     }
 
     // EU VAT prefixy (mimo CZ = tuzemsko); EL = Řecko, XI = Severní Irsko.
