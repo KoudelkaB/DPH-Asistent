@@ -90,11 +90,47 @@ public sealed class DphRepository(string databasePath)
                 key text primary key,
                 value text not null
             );
+            create table if not exists issued_invoices (
+                id integer primary key,
+                number text not null unique,
+                issue_date text not null,
+                taxable_supply_date text not null,
+                due_date text not null,
+                customer_id integer null,
+                customer_name text not null,
+                customer_ico text null,
+                customer_dic text null,
+                customer_street text null,
+                customer_house_number text null,
+                customer_city text null,
+                customer_postal_code text null,
+                customer_country text not null,
+                currency text not null,
+                variable_symbol text null,
+                payment_method text null,
+                intro_text text null,
+                note text null,
+                footer text null,
+                created_at text not null
+            );
+            create table if not exists issued_invoice_items (
+                id integer primary key,
+                invoice_id integer not null,
+                description text not null,
+                quantity text not null,
+                unit text not null,
+                unit_price_czk text not null,
+                vat_rate text not null,
+                sort_order integer not null default 0
+            );
             """, cancellationToken);
         await EnsureColumnAsync(connection, "periods", "imported_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "periods", "exported_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "periods", "changed_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "invoice_lines", "partial_deduction", "integer not null default 0", cancellationToken);
+        await EnsureColumnAsync(connection, "tax_subjects", "bank_account", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "tax_subjects", "iban", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "intro_text", "text null", cancellationToken);
     }
 
     public async Task<TaxSubject?> LoadTaxSubjectAsync(CancellationToken cancellationToken = default)
@@ -123,7 +159,9 @@ public sealed class DphRepository(string databasePath)
                 TaxOfficeCode = Text(reader, "tax_office_code"),
                 WorkplaceCode = Text(reader, "workplace_code"),
                 DataBoxId = NullableText(reader, "data_box_id"),
-                ActivityCode = Text(reader, "activity_code")
+                ActivityCode = Text(reader, "activity_code"),
+                BankAccount = NullableText(reader, "bank_account"),
+                Iban = NullableText(reader, "iban")
             }
             : null;
     }
@@ -133,13 +171,14 @@ public sealed class DphRepository(string databasePath)
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            insert into tax_subjects (id, display_name, dic, ico, first_name, last_name, title, street, house_number, city, postal_code, country, email, phone, tax_office_code, workplace_code, data_box_id, activity_code)
-            values (1, $display_name, $dic, $ico, $first_name, $last_name, $title, $street, $house_number, $city, $postal_code, $country, $email, $phone, $tax_office_code, $workplace_code, $data_box_id, $activity_code)
+            insert into tax_subjects (id, display_name, dic, ico, first_name, last_name, title, street, house_number, city, postal_code, country, email, phone, tax_office_code, workplace_code, data_box_id, activity_code, bank_account, iban)
+            values (1, $display_name, $dic, $ico, $first_name, $last_name, $title, $street, $house_number, $city, $postal_code, $country, $email, $phone, $tax_office_code, $workplace_code, $data_box_id, $activity_code, $bank_account, $iban)
             on conflict(id) do update set
                 display_name=excluded.display_name, dic=excluded.dic, ico=excluded.ico, first_name=excluded.first_name, last_name=excluded.last_name,
                 title=excluded.title, street=excluded.street, house_number=excluded.house_number, city=excluded.city, postal_code=excluded.postal_code,
                 country=excluded.country, email=excluded.email, phone=excluded.phone, tax_office_code=excluded.tax_office_code,
-                workplace_code=excluded.workplace_code, data_box_id=excluded.data_box_id, activity_code=excluded.activity_code
+                workplace_code=excluded.workplace_code, data_box_id=excluded.data_box_id, activity_code=excluded.activity_code,
+                bank_account=excluded.bank_account, iban=excluded.iban
             """;
         Add(command, "$display_name", subject.DisplayName);
         Add(command, "$dic", subject.Dic);
@@ -158,6 +197,8 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$workplace_code", subject.WorkplaceCode);
         Add(command, "$data_box_id", subject.DataBoxId);
         Add(command, "$activity_code", subject.ActivityCode);
+        Add(command, "$bank_account", subject.BankAccount);
+        Add(command, "$iban", subject.Iban);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -443,6 +484,246 @@ public sealed class DphRepository(string databasePath)
                 reader.GetInt32(reader.GetOrdinal("month")))
             : null;
     }
+
+    public async Task<List<IssuedInvoice>> LoadIssuedInvoicesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select * from issued_invoices order by number desc";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<IssuedInvoice>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadIssuedInvoice(reader));
+        }
+
+        return items;
+    }
+
+    public async Task<IssuedInvoice?> LoadIssuedInvoiceAsync(long id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        IssuedInvoice invoice;
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "select * from issued_invoices where id=$id";
+            Add(command, "$id", id);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return null;
+            }
+
+            invoice = ReadIssuedInvoice(reader);
+        }
+
+        await using (var itemsCommand = connection.CreateCommand())
+        {
+            itemsCommand.CommandText = "select * from issued_invoice_items where invoice_id=$invoice_id order by sort_order, id";
+            Add(itemsCommand, "$invoice_id", id);
+            await using var reader = await itemsCommand.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                invoice.Items.Add(ReadIssuedInvoiceItem(reader, id));
+            }
+        }
+
+        return invoice;
+    }
+
+    // Vydané faktury se zdanitelným plněním (DUZP) v daném měsíci – pro hromadné vložení do období.
+    public async Task<List<IssuedInvoice>> LoadIssuedInvoicesForPeriodAsync(int year, int month, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        var invoices = new List<IssuedInvoice>();
+        await using (var command = connection.CreateCommand())
+        {
+            // DUZP je uložené jako "yyyy-MM-dd", takže prefix měsíce sedí přes like.
+            command.CommandText = "select * from issued_invoices where taxable_supply_date like $prefix order by number";
+            Add(command, "$prefix", $"{year:D4}-{month:D2}-%");
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                invoices.Add(ReadIssuedInvoice(reader));
+            }
+        }
+
+        foreach (var invoice in invoices)
+        {
+            await using var itemsCommand = connection.CreateCommand();
+            itemsCommand.CommandText = "select * from issued_invoice_items where invoice_id=$invoice_id order by sort_order, id";
+            Add(itemsCommand, "$invoice_id", invoice.Id);
+            await using var reader = await itemsCommand.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                invoice.Items.Add(ReadIssuedInvoiceItem(reader, invoice.Id));
+            }
+        }
+
+        return invoices;
+    }
+
+    private static IssuedInvoiceItem ReadIssuedInvoiceItem(SqliteDataReader reader, long invoiceId) => new()
+    {
+        Id = reader.GetInt64(reader.GetOrdinal("id")),
+        InvoiceId = invoiceId,
+        Description = Text(reader, "description"),
+        Quantity = ParseDecimal(Text(reader, "quantity")),
+        Unit = Text(reader, "unit"),
+        UnitPriceCzk = ParseDecimal(Text(reader, "unit_price_czk")),
+        VatRate = Enum.Parse<VatRateKind>(Text(reader, "vat_rate")),
+        SortOrder = reader.GetInt32(reader.GetOrdinal("sort_order"))
+    };
+
+    public async Task<long> SaveIssuedInvoiceAsync(IssuedInvoice invoice, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = (SqliteTransaction)transaction;
+            command.CommandText = invoice.Id == 0
+                ? """
+                  insert into issued_invoices (number, issue_date, taxable_supply_date, due_date, customer_id, customer_name, customer_ico, customer_dic, customer_street, customer_house_number, customer_city, customer_postal_code, customer_country, currency, variable_symbol, payment_method, intro_text, note, footer, created_at)
+                  values ($number, $issue_date, $taxable_supply_date, $due_date, $customer_id, $customer_name, $customer_ico, $customer_dic, $customer_street, $customer_house_number, $customer_city, $customer_postal_code, $customer_country, $currency, $variable_symbol, $payment_method, $intro_text, $note, $footer, $created_at)
+                  returning id
+                  """
+                : """
+                  update issued_invoices set number=$number, issue_date=$issue_date, taxable_supply_date=$taxable_supply_date, due_date=$due_date,
+                      customer_id=$customer_id, customer_name=$customer_name, customer_ico=$customer_ico, customer_dic=$customer_dic,
+                      customer_street=$customer_street, customer_house_number=$customer_house_number, customer_city=$customer_city,
+                      customer_postal_code=$customer_postal_code, customer_country=$customer_country, currency=$currency,
+                      variable_symbol=$variable_symbol, payment_method=$payment_method, intro_text=$intro_text, note=$note, footer=$footer
+                  where id=$id
+                  returning id
+                  """;
+            Add(command, "$id", invoice.Id == 0 ? null : invoice.Id);
+            Add(command, "$number", invoice.Number);
+            Add(command, "$issue_date", invoice.IssueDate.ToString("yyyy-MM-dd"));
+            Add(command, "$taxable_supply_date", invoice.TaxableSupplyDate.ToString("yyyy-MM-dd"));
+            Add(command, "$due_date", invoice.DueDate.ToString("yyyy-MM-dd"));
+            Add(command, "$customer_id", invoice.CustomerId);
+            Add(command, "$customer_name", invoice.CustomerName);
+            Add(command, "$customer_ico", invoice.CustomerIco);
+            Add(command, "$customer_dic", invoice.CustomerDic);
+            Add(command, "$customer_street", invoice.CustomerStreet);
+            Add(command, "$customer_house_number", invoice.CustomerHouseNumber);
+            Add(command, "$customer_city", invoice.CustomerCity);
+            Add(command, "$customer_postal_code", invoice.CustomerPostalCode);
+            Add(command, "$customer_country", invoice.CustomerCountry);
+            Add(command, "$currency", invoice.Currency);
+            Add(command, "$variable_symbol", invoice.VariableSymbol);
+            Add(command, "$payment_method", invoice.PaymentMethod);
+            Add(command, "$intro_text", invoice.IntroText);
+            Add(command, "$note", invoice.Note);
+            Add(command, "$footer", invoice.Footer);
+            Add(command, "$created_at", DateTimeOffset.UtcNow.ToString("O"));
+            invoice.Id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? invoice.Id);
+        }
+
+        // Položky ukládáme jako smaž-a-vlož (jednodušší než diff a v transakci bezpečné).
+        await using (var deleteItems = connection.CreateCommand())
+        {
+            deleteItems.Transaction = (SqliteTransaction)transaction;
+            deleteItems.CommandText = "delete from issued_invoice_items where invoice_id=$invoice_id";
+            Add(deleteItems, "$invoice_id", invoice.Id);
+            await deleteItems.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var sortOrder = 0;
+        foreach (var item in invoice.Items)
+        {
+            await using var insertItem = connection.CreateCommand();
+            insertItem.Transaction = (SqliteTransaction)transaction;
+            insertItem.CommandText = """
+                insert into issued_invoice_items (invoice_id, description, quantity, unit, unit_price_czk, vat_rate, sort_order)
+                values ($invoice_id, $description, $quantity, $unit, $unit_price_czk, $vat_rate, $sort_order)
+                """;
+            Add(insertItem, "$invoice_id", invoice.Id);
+            Add(insertItem, "$description", item.Description);
+            Add(insertItem, "$quantity", item.Quantity.ToString(CultureInfo.InvariantCulture));
+            Add(insertItem, "$unit", item.Unit);
+            Add(insertItem, "$unit_price_czk", item.UnitPriceCzk.ToString(CultureInfo.InvariantCulture));
+            Add(insertItem, "$vat_rate", item.VatRate.ToString());
+            Add(insertItem, "$sort_order", sortOrder++);
+            await insertItem.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return invoice.Id;
+    }
+
+    public async Task DeleteIssuedInvoiceAsync(long id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var deleteItems = connection.CreateCommand())
+        {
+            deleteItems.Transaction = (SqliteTransaction)transaction;
+            deleteItems.CommandText = "delete from issued_invoice_items where invoice_id=$id";
+            Add(deleteItems, "$id", id);
+            await deleteItems.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deleteInvoice = connection.CreateCommand())
+        {
+            deleteInvoice.Transaction = (SqliteTransaction)transaction;
+            deleteInvoice.CommandText = "delete from issued_invoices where id=$id";
+            Add(deleteInvoice, "$id", id);
+            await deleteInvoice.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    // Další číslo faktury pro daný rok: RRRR#### (pořadí 4 místa, reset s rokem, první = RRRR0001).
+    public async Task<string> NextInvoiceNumberAsync(int year, CancellationToken cancellationToken = default)
+    {
+        var prefix = year.ToString("D4", CultureInfo.InvariantCulture);
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select number from issued_invoices where number like $prefix";
+        Add(command, "$prefix", prefix + "%");
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var maxSequence = 0;
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var number = reader.GetString(0);
+            if (number.Length > prefix.Length
+                && int.TryParse(number[prefix.Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sequence))
+            {
+                maxSequence = Math.Max(maxSequence, sequence);
+            }
+        }
+
+        return $"{prefix}{maxSequence + 1:D4}";
+    }
+
+    private static IssuedInvoice ReadIssuedInvoice(SqliteDataReader reader) => new()
+    {
+        Id = reader.GetInt64(reader.GetOrdinal("id")),
+        Number = Text(reader, "number"),
+        IssueDate = DateOnly.Parse(Text(reader, "issue_date"), CultureInfo.InvariantCulture),
+        TaxableSupplyDate = DateOnly.Parse(Text(reader, "taxable_supply_date"), CultureInfo.InvariantCulture),
+        DueDate = DateOnly.Parse(Text(reader, "due_date"), CultureInfo.InvariantCulture),
+        CustomerId = NullableLong(reader, "customer_id"),
+        CustomerName = Text(reader, "customer_name"),
+        CustomerIco = NullableText(reader, "customer_ico"),
+        CustomerDic = NullableText(reader, "customer_dic"),
+        CustomerStreet = NullableText(reader, "customer_street"),
+        CustomerHouseNumber = NullableText(reader, "customer_house_number"),
+        CustomerCity = NullableText(reader, "customer_city"),
+        CustomerPostalCode = NullableText(reader, "customer_postal_code"),
+        CustomerCountry = Text(reader, "customer_country"),
+        Currency = Text(reader, "currency"),
+        VariableSymbol = NullableText(reader, "variable_symbol"),
+        PaymentMethod = NullableText(reader, "payment_method"),
+        IntroText = NullableText(reader, "intro_text"),
+        Note = NullableText(reader, "note"),
+        Footer = NullableText(reader, "footer")
+    };
 
     public async Task<AresSubject?> LoadAresCacheAsync(string ico, CancellationToken cancellationToken = default)
     {

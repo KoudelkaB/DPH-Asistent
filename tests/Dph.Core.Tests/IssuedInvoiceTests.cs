@@ -1,0 +1,183 @@
+using Dph.Core.Domain;
+using Dph.Core.Invoicing;
+using Dph.Core.Persistence;
+
+namespace Dph.Core.Tests;
+
+public sealed class IssuedInvoiceTests
+{
+    [Fact]
+    public void Intro_Placeholders_Resolve_From_Taxable_Supply_Date()
+    {
+        Assert.Equal(
+            "Za květen 2026 Vám fakturujeme:",
+            InvoiceText.ResolvePlaceholders(InvoiceText.DefaultIntroTemplate, new DateOnly(2026, 5, 31)));
+
+        // ASCII varianta i jiné období.
+        Assert.Equal(
+            "Za prosinec 2025.",
+            InvoiceText.ResolvePlaceholders("Za {mesic} {rok}.", new DateOnly(2025, 12, 1)));
+    }
+
+    [Fact]
+    public void Intro_Without_Placeholders_Is_Unchanged()
+    {
+        Assert.Equal("Děkujeme za spolupráci.",
+            InvoiceText.ResolvePlaceholders("Děkujeme za spolupráci.", new DateOnly(2026, 6, 30)));
+    }
+
+    [Fact]
+    public void Totals_Sum_Items_And_Vat()
+    {
+        var invoice = new IssuedInvoice
+        {
+            Items =
+            {
+                new IssuedInvoiceItem { Quantity = 10, UnitPriceCzk = 1200, VatRate = VatRateKind.Standard21 },
+                new IssuedInvoiceItem { Quantity = 2, UnitPriceCzk = 800, VatRate = VatRateKind.Reduced12 }
+            }
+        };
+
+        Assert.Equal(13600m, invoice.TotalBaseCzk);   // 12000 + 1600
+        Assert.Equal(2712m, invoice.TotalVatCzk);     // 2520 + 192
+        Assert.Equal(16312m, invoice.TotalGrossCzk);
+    }
+
+    [Fact]
+    public void VatRecap_Groups_By_Rate_Descending()
+    {
+        var invoice = new IssuedInvoice
+        {
+            Items =
+            {
+                new IssuedInvoiceItem { Quantity = 1, UnitPriceCzk = 100, VatRate = VatRateKind.Reduced12 },
+                new IssuedInvoiceItem { Quantity = 1, UnitPriceCzk = 200, VatRate = VatRateKind.Standard21 },
+                new IssuedInvoiceItem { Quantity = 1, UnitPriceCzk = 50, VatRate = VatRateKind.Reduced12 }
+            }
+        };
+
+        var recap = invoice.VatRecap();
+        Assert.Equal(2, recap.Count);
+        Assert.Equal(VatRateKind.Standard21, recap[0].Rate);
+        Assert.Equal(200m, recap[0].BaseCzk);
+        Assert.Equal(42m, recap[0].VatCzk);
+        Assert.Equal(VatRateKind.Reduced12, recap[1].Rate);
+        Assert.Equal(150m, recap[1].BaseCzk);
+        Assert.Equal(18m, recap[1].VatCzk);
+    }
+
+    [Fact]
+    public void PaymentVariableSymbol_Defaults_To_Number_Digits()
+    {
+        Assert.Equal("20260001", new IssuedInvoice { Number = "20260001" }.PaymentVariableSymbol);
+        Assert.Equal("777", new IssuedInvoice { Number = "20260001", VariableSymbol = "VS 777" }.PaymentVariableSymbol);
+    }
+
+    [Fact]
+    public async Task Repository_RoundTrips_Invoice_With_Items_And_Generates_Numbers()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        Assert.Equal("20260001", await repository.NextInvoiceNumberAsync(2026));
+
+        var invoice = new IssuedInvoice
+        {
+            Number = "20260001",
+            IssueDate = new DateOnly(2026, 6, 30),
+            TaxableSupplyDate = new DateOnly(2026, 6, 30),
+            DueDate = new DateOnly(2026, 7, 14),
+            CustomerName = "Žďár s.r.o.",
+            CustomerIco = "87654321",
+            CustomerDic = "CZ87654321",
+            CustomerCity = "Příbram",
+            IntroText = "Za červen 2026 Vám fakturujeme:",
+            Items =
+            {
+                new IssuedInvoiceItem { Description = "Práce", Quantity = 3, Unit = "hod", UnitPriceCzk = 1000.5m, VatRate = VatRateKind.Standard21 }
+            }
+        };
+        await repository.SaveIssuedInvoiceAsync(invoice);
+        Assert.NotEqual(0, invoice.Id);
+
+        // Po uložení faktury se další číslo posune.
+        Assert.Equal("20260002", await repository.NextInvoiceNumberAsync(2026));
+
+        var loaded = await repository.LoadIssuedInvoiceAsync(invoice.Id);
+        Assert.NotNull(loaded);
+        Assert.Equal("Žďár s.r.o.", loaded!.CustomerName);
+        Assert.Equal("Příbram", loaded.CustomerCity);
+        Assert.Equal("Za červen 2026 Vám fakturujeme:", loaded.IntroText);
+        var item = Assert.Single(loaded.Items);
+        Assert.Equal("Práce", item.Description);
+        Assert.Equal(3m, item.Quantity);
+        Assert.Equal(1000.5m, item.UnitPriceCzk);
+        Assert.Equal(VatRateKind.Standard21, item.VatRate);
+
+        // Editace = smaž a vlož položky; nesmí zůstat duplicity.
+        loaded.Items.Add(new IssuedInvoiceItem { Description = "Doprava", Quantity = 1, UnitPriceCzk = 200, VatRate = VatRateKind.Standard21 });
+        await repository.SaveIssuedInvoiceAsync(loaded);
+        var reloaded = await repository.LoadIssuedInvoiceAsync(invoice.Id);
+        Assert.Equal(2, reloaded!.Items.Count);
+
+        await repository.DeleteIssuedInvoiceAsync(invoice.Id);
+        Assert.Null(await repository.LoadIssuedInvoiceAsync(invoice.Id));
+    }
+
+    [Fact]
+    public async Task Repository_Loads_Issued_Invoices_By_Duzp_Month()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        await repository.SaveIssuedInvoiceAsync(new IssuedInvoice
+        {
+            Number = "20260601",
+            TaxableSupplyDate = new DateOnly(2026, 6, 15),
+            CustomerName = "Červen A",
+            Items = { new IssuedInvoiceItem { Description = "x", Quantity = 1, UnitPriceCzk = 100, VatRate = VatRateKind.Standard21 } }
+        });
+        await repository.SaveIssuedInvoiceAsync(new IssuedInvoice
+        {
+            Number = "20260602",
+            TaxableSupplyDate = new DateOnly(2026, 6, 30),
+            CustomerName = "Červen B"
+        });
+        await repository.SaveIssuedInvoiceAsync(new IssuedInvoice
+        {
+            Number = "20260701",
+            TaxableSupplyDate = new DateOnly(2026, 7, 1),
+            CustomerName = "Červenec"
+        });
+
+        var june = await repository.LoadIssuedInvoicesForPeriodAsync(2026, 6);
+        Assert.Equal(2, june.Count);
+        Assert.All(june, x => Assert.Equal(6, x.TaxableSupplyDate.Month));
+        Assert.Single(june.First(x => x.Number == "20260601").Items);
+
+        Assert.Single(await repository.LoadIssuedInvoicesForPeriodAsync(2026, 7));
+        Assert.Empty(await repository.LoadIssuedInvoicesForPeriodAsync(2026, 5));
+    }
+
+    [Fact]
+    public async Task Repository_RoundTrips_Tax_Subject_Bank_Fields()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        await repository.SaveTaxSubjectAsync(new TaxSubject
+        {
+            DisplayName = "Jan Novák",
+            Dic = "CZ1234567890",
+            BankAccount = "19-2000145399/0800",
+            Iban = "CZ6508000000192000145399"
+        });
+
+        var loaded = await repository.LoadTaxSubjectAsync();
+        Assert.Equal("19-2000145399/0800", loaded!.BankAccount);
+        Assert.Equal("CZ6508000000192000145399", loaded.Iban);
+    }
+}

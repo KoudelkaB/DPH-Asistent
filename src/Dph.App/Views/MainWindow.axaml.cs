@@ -28,7 +28,29 @@ public partial class MainWindow : Window
             viewModel.ConfirmAsync = ConfirmAsync;
             viewModel.ConfirmReexportAsync = ConfirmReexportAsync;
             viewModel.CopyToClipboardAsync = CopyToClipboardAsync;
+            viewModel.Issuing.PickPdfTargetAsync = PickPdfTargetAsync;
         }
+    }
+
+    private async Task<string?> PickPdfTargetAsync(string currentDirectory, string defaultFileName)
+    {
+        var startLocation = await TryGetStartLocationAsync(currentDirectory);
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Uložit fakturu jako PDF",
+            SuggestedStartLocation = startLocation,
+            SuggestedFileName = defaultFileName,
+            DefaultExtension = "pdf",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("PDF dokument")
+                {
+                    Patterns = ["*.pdf"]
+                }
+            ]
+        });
+
+        return file?.Path.LocalPath;
     }
 
     private async Task CopyToClipboardAsync(string text)
@@ -251,6 +273,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        await viewModel.SaveTaxSubjectAsync();
         await viewModel.SaveWindowSizeAsync(Bounds.Width, Bounds.Height);
     }
 }

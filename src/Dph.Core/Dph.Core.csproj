@@ -7,7 +7,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Czech-capable font embedded for the PDF renderer; PDFsharp has no GDI/system fonts on Linux. -->
+    <EmbeddedResource Include="Assets\Fonts\DejaVuSans.ttf" />
+    <EmbeddedResource Include="Assets\Fonts\DejaVuSans-Bold.ttf" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageReference Include="PDFsharp-MigraDoc" Version="6.2.4" />
+    <PackageReference Include="QRCoder" Version="1.8.0" />
     <!-- Override the vulnerable native binary pulled transitively by Microsoft.Data.Sqlite
          (SQLitePCLRaw.lib.e_sqlite3 2.1.11, GHSA-2m69-gcr7-jv3q). -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />

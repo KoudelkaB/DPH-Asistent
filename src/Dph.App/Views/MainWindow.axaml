@@ -95,7 +95,7 @@
 
                     <Grid Grid.Column="1" RowDefinitions="Auto,* ,Auto" RowSpacing="10">
                         <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="10">
-                            <Grid ColumnDefinitions="90,120,90,120,90,120,90,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                            <Grid ColumnDefinitions="90,120,90,120,90,120,90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                                 <TextBlock Text="DIČ" VerticalAlignment="Center"/>
                                 <TextBox Grid.Column="1" Text="{Binding TaxSubject.Dic}"/>
                                 <TextBlock Grid.Column="2" Text="Jméno" VerticalAlignment="Center"/>
@@ -152,6 +152,13 @@
                                 <TextBox Grid.Row="3" Grid.Column="5" Text="{Binding TaxSubject.Phone}"/>
                                 <TextBlock Grid.Row="3" Grid.Column="6" Text="Datová schr." VerticalAlignment="Center"/>
                                 <TextBox Grid.Row="3" Grid.Column="7" Text="{Binding TaxSubject.DataBoxId}"/>
+
+                                <TextBlock Grid.Row="4" Text="Bankovní účet" VerticalAlignment="Center"
+                                           ToolTip.Tip="Účet dodavatele pro vydané faktury ve tvaru [předčíslí-]číslo/kód banky. Z něj se počítá IBAN a QR Platba."/>
+                                <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding TaxSubject.BankAccount}"/>
+                                <TextBlock Grid.Row="4" Grid.Column="4" Text="IBAN" VerticalAlignment="Center"
+                                           ToolTip.Tip="Volitelně. Když je prázdné, IBAN se dopočítá z bankovního účtu."/>
+                                <TextBox Grid.Row="4" Grid.Column="5" Grid.ColumnSpan="3" Text="{Binding TaxSubject.Iban}"/>
                             </Grid>
                         </Border>
 
@@ -239,6 +246,155 @@
                             </ComboBox>
                         </Grid>
                     </Grid>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Vydané faktury">
+                <Grid Name="issuedInvoicesRoot" DataContext="{Binding Issuing}" x:DataType="vm:IssuedInvoicesViewModel" ColumnDefinitions="300,*" ColumnSpacing="10">
+                    <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="10">
+                        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
+                            <TextBlock Text="Vydané faktury" FontSize="15" FontWeight="SemiBold"/>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding Invoices}" SelectedItem="{Binding SelectedInvoice}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:IssuedInvoiceViewModel">
+                                        <StackPanel Margin="4">
+                                            <TextBlock Text="{Binding DisplayTitle}" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding TotalsText}" Foreground="#6B7280" FontSize="11"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Grid Grid.Row="2" RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
+                                <Button Command="{Binding NewInvoiceCommand}" Content="Nová faktura" HorizontalAlignment="Stretch"/>
+                                <Button Grid.Row="1" Command="{Binding UseAsTemplateCommand}" Content="Použít jako šablonu" HorizontalAlignment="Stretch"/>
+                                <Button Grid.Row="2" Command="{Binding DeleteInvoiceCommand}" Content="Smazat fakturu" HorizontalAlignment="Stretch"/>
+                            </Grid>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="1" Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="14"
+                            IsVisible="{Binding SelectedInvoice, Converter={x:Static ObjectConverters.IsNotNull}}">
+                        <ScrollViewer>
+                            <StackPanel Spacing="10" DataContext="{Binding SelectedInvoice}" x:DataType="vm:IssuedInvoiceViewModel">
+                                <Grid ColumnDefinitions="90,150,90,140,90,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                                    <TextBlock Text="Číslo" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="1" Text="{Binding Number}"/>
+                                    <TextBlock Grid.Column="2" Text="Vystaveno" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="3" Text="{Binding IssueDate}"/>
+                                    <TextBlock Grid.Column="4" Text="DUZP" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="5" Text="{Binding TaxableSupplyDate}" HorizontalAlignment="Left" MinWidth="140"/>
+
+                                    <TextBlock Grid.Row="1" Text="Splatnost" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding DueDate}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="2" Text="Var. symbol" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding VariableSymbol}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="4" Text="Měna" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Row="1" Grid.Column="5" Text="{Binding Currency}" HorizontalAlignment="Left" MinWidth="80"/>
+                                </Grid>
+
+                                <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="4" Padding="10">
+                                    <Grid ColumnDefinitions="90,160,Auto,Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                                        <TextBlock Text="Odběratel" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding CustomerIco}" Watermark="IČO"/>
+                                        <Button Grid.Column="2"
+                                                Command="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext).FillCustomerFromAresCommand}"
+                                                Content="Načíst z ARES"/>
+                                        <ComboBox Grid.Column="3"
+                                                  MinWidth="200"
+                                                  PlaceholderText="…nebo z adresáře"
+                                                  ItemsSource="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext).Customers}"
+                                                  SelectedItem="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext).SelectedCustomer}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:CounterpartyViewModel">
+                                                    <TextBlock Text="{Binding DisplayName}"/>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+
+                                        <TextBlock Grid.Row="1" Text="Název" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding CustomerName}"/>
+
+                                        <TextBlock Grid.Row="2" Text="DIČ" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CustomerDic}"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="2" Text="Ulice / č.p." VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                        <Grid Grid.Row="2" Grid.Column="3" Grid.ColumnSpan="2" ColumnDefinitions="*,80" ColumnSpacing="6">
+                                            <TextBox Text="{Binding CustomerStreet}"/>
+                                            <TextBox Grid.Column="1" Text="{Binding CustomerHouseNumber}"/>
+                                        </Grid>
+
+                                        <TextBlock Grid.Row="3" Text="Obec / PSČ" VerticalAlignment="Center"/>
+                                        <Grid Grid.Row="3" Grid.Column="1" ColumnDefinitions="*,90" ColumnSpacing="6">
+                                            <TextBox Text="{Binding CustomerCity}"/>
+                                            <TextBox Grid.Column="1" Text="{Binding CustomerPostalCode}"/>
+                                        </Grid>
+                                        <TextBlock Grid.Row="3" Grid.Column="2" Text="Stát" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                        <TextBox Grid.Row="3" Grid.Column="3" Grid.ColumnSpan="2" Text="{Binding CustomerCountry}"/>
+                                    </Grid>
+                                </Border>
+
+                                <Grid ColumnDefinitions="90,*" ColumnSpacing="8">
+                                    <TextBlock Text="Úvodní text" VerticalAlignment="Center"
+                                               ToolTip.Tip="Text nad položkami. Placeholdery {měsíc} a {rok} se v PDF nahradí podle DUZP (např. 'Za {měsíc} {rok} Vám fakturujeme:'). Předvyplní se při vystavení v poslední den měsíce."/>
+                                    <TextBox Grid.Column="1" Text="{Binding IntroText}"/>
+                                </Grid>
+
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                    <TextBlock Text="Položky" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="1"
+                                            Command="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext).AddItemCommand}"
+                                            Content="Přidat řádek"/>
+                                </Grid>
+
+                                <Grid ColumnDefinitions="*,64,52,98,76,104,92,40" ColumnSpacing="10">
+                                    <TextBlock Text="Popis"/>
+                                    <TextBlock Grid.Column="1" Text="Počet" HorizontalAlignment="Right"/>
+                                    <TextBlock Grid.Column="2" Text="MJ"/>
+                                    <TextBlock Grid.Column="3" Text="Cena/MJ" HorizontalAlignment="Right"/>
+                                    <TextBlock Grid.Column="4" Text="Sazba" HorizontalAlignment="Right"/>
+                                    <TextBlock Grid.Column="5" Text="Základ" HorizontalAlignment="Right" Margin="0,0,4,0"/>
+                                    <TextBlock Grid.Column="6" Text="DPH" HorizontalAlignment="Right" Margin="0,0,4,0"/>
+                                    <TextBlock Grid.Column="7" Text=""/>
+                                </Grid>
+
+                                <ItemsControl ItemsSource="{Binding Items}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:IssuedInvoiceItemViewModel">
+                                            <Grid ColumnDefinitions="*,64,52,98,76,104,92,40" ColumnSpacing="10" Margin="0,2">
+                                                <TextBox Text="{Binding Description}"/>
+                                                <TextBox Grid.Column="1" Text="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <TextBox Grid.Column="2" Text="{Binding Unit}"/>
+                                                <TextBox Grid.Column="3" Text="{Binding UnitPriceCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <ComboBox Grid.Column="4" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
+                                                <TextBlock Grid.Column="5" Text="{Binding LineBaseText}" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,4,0"/>
+                                                <TextBlock Grid.Column="6" Text="{Binding LineVatText}" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,4,0"/>
+                                                <Button Grid.Column="7" Content="✕"
+                                                        Command="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext).RemoveItemCommand}"
+                                                        CommandParameter="{Binding}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Text="{Binding TotalsText}" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+
+                                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                                    <TextBlock Text="Poznámka" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="1" Text="{Binding Note}"/>
+                                    <TextBlock Grid.Row="1" Text="Patička" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Footer}"/>
+                                </Grid>
+
+                                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right"
+                                            DataContext="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext)}"
+                                            x:DataType="vm:IssuedInvoicesViewModel">
+                                    <Button Command="{Binding SaveInvoiceCommand}" Content="Uložit fakturu"/>
+                                    <Button Command="{Binding InsertIntoVatCommand}" Content="Vložit do DPH"/>
+                                    <Button Command="{Binding SavePdfCommand}" Content="Uložit PDF"
+                                            Background="#2563EB" Foreground="White"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
                 </Grid>
             </TabItem>
 

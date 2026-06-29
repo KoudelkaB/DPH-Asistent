@@ -109,9 +109,19 @@ public partial class MainWindowViewModel : ViewModelBase
         _aresClient = aresClient;
         _exchangeRateProvider = exchangeRateProvider;
         _taxOfficeCatalog = taxOfficeCatalog;
+        Issuing = new IssuedInvoicesViewModel(
+            _repository,
+            _aresClient,
+            Counterparties,
+            () => TaxSubject,
+            SaveTaxSubjectAsync,
+            InsertIssuedInvoiceIntoVatAsync,
+            message => StatusMessage = message);
         ApplyTaxOfficeCatalog(TaxOfficeDirectory.Offices, TaxOfficeDirectory.Workplaces);
         _ = LoadAsync();
     }
+
+    public IssuedInvoicesViewModel Issuing { get; }
 
     public async Task<(double Width, double Height)?> LoadWindowSizeAsync()
     {
@@ -379,7 +389,83 @@ public partial class MainWindowViewModel : ViewModelBase
         EnsureCounterpartyDraftSelected();
         await LoadCachedTaxOfficeCatalogAsync();
         SyncTaxOfficeSelectionFromSubject();
+        await Issuing.LoadAsync();
         StatusMessage = "Načteno.";
+    }
+
+    // Uloží poplatníka (včetně bankovního účtu/IBAN). Volá se před generováním PDF / vložením do DPH
+    // a při zavření okna, aby se ručně zadané údaje neztratily, i když zrovna neproběhlo uložení faktur.
+    public Task SaveTaxSubjectAsync() => _repository.SaveTaxSubjectAsync(TaxSubject);
+
+    // Vloží vydanou fakturu do tabulky DPH: najde/založí období podle DUZP a přidá řádek
+    // InvoiceKind.IssuedDomestic za každou sazbu DPH (jeden řádek = jedna sazba).
+    internal async Task<string> InsertIssuedInvoiceIntoVatAsync(IssuedInvoice invoice)
+    {
+        var period = await EnsurePeriodForAsync(invoice.TaxableSupplyDate);
+        var inserted = await InsertIssuedInvoiceLinesAsync(invoice, period);
+
+        if (SelectedPeriod?.Id == period.Id)
+        {
+            await LoadInvoicesAsync();
+        }
+        else
+        {
+            await MarkPeriodChangedAsync(period.Id);
+        }
+
+        return $"Faktura {invoice.Number} vložena do DPH období {period.Label} ({inserted} řádků).";
+    }
+
+    // Najde období pro daný měsíc/rok, případně ho založí.
+    private async Task<VatPeriod> EnsurePeriodForAsync(DateOnly date)
+    {
+        var period = Periods.FirstOrDefault(x => x.Year == date.Year && x.Month == date.Month);
+        if (period is null)
+        {
+            period = new VatPeriod
+            {
+                Year = date.Year,
+                Month = date.Month,
+                SubmissionDate = DateOnly.FromDateTime(DateTime.Today),
+                FormType = "B"
+            };
+            await _repository.SavePeriodAsync(period);
+            Periods.Insert(0, period);
+        }
+
+        return period;
+    }
+
+    // Vloží do období řádky DPH za jednu vydanou fakturu (jeden řádek na každou sazbu). Vrací počet
+    // vložených řádků. Nereloaduje – volající si řízne načtení/označení změny sám.
+    private async Task<int> InsertIssuedInvoiceLinesAsync(IssuedInvoice invoice, VatPeriod period)
+    {
+        var inserted = 0;
+        foreach (var group in invoice.VatRecap())
+        {
+            if (group.BaseCzk == 0 && group.VatCzk == 0)
+            {
+                continue;
+            }
+
+            await _repository.SaveInvoiceAsync(new InvoiceLine
+            {
+                PeriodId = period.Id,
+                Kind = InvoiceKind.IssuedDomestic,
+                CounterpartyId = invoice.CustomerId,
+                CounterpartyName = invoice.CustomerName,
+                CounterpartyDic = invoice.CustomerDic,
+                EvidenceNumber = invoice.Number,
+                TaxableSupplyDate = invoice.TaxableSupplyDate,
+                TaxBaseCzk = group.BaseCzk,
+                VatCzk = group.VatCzk,
+                VatRate = group.Rate,
+                Currency = "CZK"
+            });
+            inserted++;
+        }
+
+        return inserted;
     }
 
     // Keeps the subject editor bound to a real object even before the user picks one from the
@@ -448,11 +534,40 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         SelectedPeriod = period;
-        var copied = sourcePeriod is null ? 0 : await CopyTemplateInvoicesAsync(sourcePeriod.Id, period);
+
+        // Když pro nové období existují vlastní vydané faktury, vloží se ony a z šablony se vynechají
+        // kopírované vydané řádky (aby se vydaná plnění nezdvojila). Souhrn KH (A5) zůstává.
+        var issuedInvoices = await _repository.LoadIssuedInvoicesForPeriodAsync(period.Year, period.Month);
+        var hasIssued = issuedInvoices.Count > 0;
+
+        var copied = sourcePeriod is null ? 0 : await CopyTemplateInvoicesAsync(sourcePeriod.Id, period, skipIssued: hasIssued);
+
+        var insertedFromIssued = 0;
+        foreach (var issued in issuedInvoices)
+        {
+            insertedFromIssued += await InsertIssuedInvoiceLinesAsync(issued, period);
+        }
+
         await LoadInvoicesAsync();
-        StatusMessage = copied == 0
+        StatusMessage = BuildAddPeriodStatus(period, sourcePeriod, copied, issuedInvoices.Count, insertedFromIssued);
+    }
+
+    private static string BuildAddPeriodStatus(VatPeriod period, VatPeriod? sourcePeriod, int copied, int issuedInvoiceCount, int insertedFromIssued)
+    {
+        var parts = new List<string>();
+        if (copied > 0)
+        {
+            parts.Add($"zkopírováno {copied} řádků jako šablona z {sourcePeriod!.Label}");
+        }
+
+        if (insertedFromIssued > 0)
+        {
+            parts.Add($"vloženo {insertedFromIssued} řádků z {issuedInvoiceCount} vydaných faktur");
+        }
+
+        return parts.Count == 0
             ? $"Vytvořeno období {period.Label}."
-            : $"Vytvořeno období {period.Label} z {sourcePeriod!.Label}; zkopírováno {copied} řádků jako šablona.";
+            : $"Vytvořeno období {period.Label}: {string.Join(", ", parts)}.";
     }
 
     [RelayCommand]
@@ -1391,12 +1506,19 @@ public partial class MainWindowViewModel : ViewModelBase
         return await SaveInvoicesCoreAsync(requirePendingChanges: true, successMessage: "Automaticky uloženo.");
     }
 
-    private async Task<int> CopyTemplateInvoicesAsync(long sourcePeriodId, VatPeriod targetPeriod)
+    // skipIssued: vynechá kopírování vydaných řádků (kromě souhrnu KH A5) – použije se, když cílové
+    // období má vlastní vydané faktury, které se do něj vloží napřímo.
+    private async Task<int> CopyTemplateInvoicesAsync(long sourcePeriodId, VatPeriod targetPeriod, bool skipIssued = false)
     {
         var sourceInvoices = await _repository.LoadInvoicesAsync(sourcePeriodId);
         var copied = 0;
         foreach (var source in sourceInvoices)
         {
+            if (skipIssued && source.Kind == InvoiceKind.IssuedDomestic && !IsControlStatementSummary(source))
+            {
+                continue;
+            }
+
             source.Id = 0;
             source.PeriodId = targetPeriod.Id;
             if (!IsControlStatementSummary(source))

@@ -20,4 +20,9 @@ public sealed class TaxSubject
     public string WorkplaceCode { get; set; } = "";
     public string? DataBoxId { get; set; }
     public string ActivityCode { get; set; } = "620000";
+
+    // Platební údaje dodavatele pro vydané faktury. BankAccount ve tvaru "[předčíslí-]číslo/kódbanky";
+    // Iban je volitelný (když chybí, dopočítá se z BankAccount pro QR Platbu).
+    public string? BankAccount { get; set; }
+    public string? Iban { get; set; }
 }
