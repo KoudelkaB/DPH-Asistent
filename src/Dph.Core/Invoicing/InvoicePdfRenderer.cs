@@ -39,7 +39,7 @@ public sealed class InvoicePdfRenderer
             invoice.TotalGrossCzk,
             invoice.Currency,
             invoice.PaymentVariableSymbol,
-            $"Faktura {invoice.Number}");
+            message: null);
         return "base64:" + Convert.ToBase64String(QrCodeRenderer.RenderBmp(spayd));
     }
 
@@ -81,6 +81,7 @@ public sealed class InvoicePdfRenderer
         // Placeholdery {měsíc}/{rok} se dosadí podle DUZP, ať text vždy sedí na zdaňovací období.
         var text = InvoiceText.ResolvePlaceholders(invoice.IntroText, invoice.TaxableSupplyDate);
         var intro = section.AddParagraph(text);
+        SetBodyLineSpacing(intro);
         intro.Format.SpaceAfter = Unit.FromMillimeter(3);
     }
 
@@ -94,6 +95,7 @@ public sealed class InvoicePdfRenderer
         var row = table.AddRow();
 
         var left = row.Cells[0].AddParagraph();
+        SetBodyLineSpacing(left);
         AddLabel(left, "DODAVATEL");
         AddLine(left, SupplierName(supplier), bold: true);
         AddLine(left, JoinAddress(supplier.Street, supplier.HouseNumber));
@@ -102,6 +104,7 @@ public sealed class InvoicePdfRenderer
         if (!string.IsNullOrWhiteSpace(supplier.Dic)) AddLine(left, $"DIČ: {supplier.Dic}");
 
         var middle = row.Cells[1].AddParagraph();
+        SetBodyLineSpacing(middle);
         AddLabel(middle, "ODBĚRATEL");
         AddLine(middle, invoice.CustomerName, bold: true);
         AddLine(middle, JoinAddress(invoice.CustomerStreet, invoice.CustomerHouseNumber));
@@ -114,7 +117,7 @@ public sealed class InvoicePdfRenderer
         if (qrSource is not null)
         {
             var qrCell = row.Cells[2].AddParagraph();
-            qrCell.Format.Alignment = ParagraphAlignment.Right;
+            qrCell.Format.Alignment = ParagraphAlignment.Center;
             AddLabel(qrCell, "QR PLATBA");
             var image = qrCell.AddImage(qrSource);
             image.Width = Unit.FromCentimeter(3);
@@ -122,28 +125,36 @@ public sealed class InvoicePdfRenderer
             image.Interpolate = false;
         }
 
-        section.AddParagraph().Format.SpaceAfter = Unit.FromMillimeter(4);
+        var spacer = section.AddParagraph();
+        spacer.Format.Font.Size = 1;
+        spacer.Format.SpaceAfter = Unit.FromMillimeter(1);
     }
 
     private static void AddMeta(Section section, TaxSubject supplier, IssuedInvoice invoice)
     {
         var iban = supplier.Iban.NullOrTrim() ?? CzechIban.TryFromAccount(supplier.BankAccount);
+        var heading = section.AddParagraph();
+        heading.Format.SpaceAfter = Unit.FromMillimeter(1);
+        AddLabel(heading, "PLATEBNÍ PODMÍNKY");
+
         var table = section.AddTable();
         table.AddColumn(Unit.FromCentimeter(8.5));
         table.AddColumn(Unit.FromCentimeter(8.5));
         var row = table.AddRow();
 
         var left = row.Cells[0].AddParagraph();
+        SetBodyLineSpacing(left);
         if (!string.IsNullOrWhiteSpace(supplier.BankAccount)) AddLine(left, $"Bankovní účet: {supplier.BankAccount}");
         if (iban is not null) AddLine(left, $"IBAN: {iban}");
-        AddLine(left, $"Variabilní symbol: {invoice.PaymentVariableSymbol}");
+        AddLine(left, $"Variabilní symbol: {invoice.PaymentVariableSymbol}", bold: true);
         if (!string.IsNullOrWhiteSpace(invoice.PaymentMethod)) AddLine(left, $"Způsob platby: {invoice.PaymentMethod}");
 
         var right = row.Cells[1].AddParagraph();
+        SetBodyLineSpacing(right);
         right.Format.LeftIndent = Unit.FromCentimeter(0.5);
         AddLine(right, $"Datum vystavení: {FormatDate(invoice.IssueDate)}");
         AddLine(right, $"Datum zdan. plnění (DUZP): {FormatDate(invoice.TaxableSupplyDate)}");
-        AddLine(right, $"Datum splatnosti: {FormatDate(invoice.DueDate)}");
+        AddLine(right, $"Datum splatnosti: {FormatDate(invoice.DueDate)}", bold: true);
 
         section.AddParagraph().Format.SpaceAfter = Unit.FromMillimeter(4);
     }
@@ -153,28 +164,31 @@ public sealed class InvoicePdfRenderer
         var table = section.AddTable();
         table.Borders.Width = 0.5;
         table.Borders.Color = Colors.LightGray;
-        table.AddColumn(Unit.FromCentimeter(6.2)); // popis
-        table.AddColumn(Unit.FromCentimeter(1.6)); // počet
-        table.AddColumn(Unit.FromCentimeter(1.4)); // MJ
-        table.AddColumn(Unit.FromCentimeter(2.4)); // cena/MJ
-        table.AddColumn(Unit.FromCentimeter(1.2)); // sazba
-        table.AddColumn(Unit.FromCentimeter(2.3)); // základ
-        table.AddColumn(Unit.FromCentimeter(1.9)); // DPH
+        table.Format.Font.Size = 9;
+        table.AddColumn(Unit.FromCentimeter(6.05)); // popis
+        table.AddColumn(Unit.FromCentimeter(1.35)); // počet
+        table.AddColumn(Unit.FromCentimeter(0.9)); // MJ
+        table.AddColumn(Unit.FromCentimeter(2.25)); // cena/MJ
+        table.AddColumn(Unit.FromCentimeter(1.35)); // sazba
+        table.AddColumn(Unit.FromCentimeter(2.7)); // základ
+        table.AddColumn(Unit.FromCentimeter(2.4)); // DPH
 
         var header = table.AddRow();
+        SetRowPadding(header);
         header.Shading.Color = Colors.WhiteSmoke;
         header.Format.Font.Bold = true;
         SetCell(header.Cells[0], "Popis", ParagraphAlignment.Left);
         SetCell(header.Cells[1], "Počet", ParagraphAlignment.Right);
         SetCell(header.Cells[2], "MJ", ParagraphAlignment.Left);
-        SetCell(header.Cells[3], "Cena/MJ", ParagraphAlignment.Right);
-        SetCell(header.Cells[4], "Sazba", ParagraphAlignment.Right);
+        SetCell(header.Cells[3], "Cena/MJ", ParagraphAlignment.Center);
+        SetCell(header.Cells[4], "Sazba", ParagraphAlignment.Center);
         SetCell(header.Cells[5], "Základ", ParagraphAlignment.Right);
         SetCell(header.Cells[6], "DPH", ParagraphAlignment.Right);
 
         foreach (var item in invoice.Items)
         {
             var row = table.AddRow();
+            SetRowPadding(row);
             SetCell(row.Cells[0], item.Description, ParagraphAlignment.Left);
             SetCell(row.Cells[1], FormatQuantity(item.Quantity), ParagraphAlignment.Right);
             SetCell(row.Cells[2], item.Unit, ParagraphAlignment.Left);
@@ -193,6 +207,7 @@ public sealed class InvoicePdfRenderer
 
         // Rekapitulace DPH po sazbách + součty základu a daně.
         var recap = section.AddParagraph();
+        SetBodyLineSpacing(recap);
         AddLabel(recap, "REKAPITULACE DPH");
         foreach (var x in invoice.VatRecap())
         {
@@ -218,12 +233,14 @@ public sealed class InvoicePdfRenderer
         if (!string.IsNullOrWhiteSpace(invoice.Note))
         {
             var note = section.AddParagraph(invoice.Note);
+            SetBodyLineSpacing(note);
             note.Format.SpaceBefore = Unit.FromMillimeter(6);
         }
 
         if (!string.IsNullOrWhiteSpace(invoice.Footer))
         {
             var footer = section.AddParagraph(invoice.Footer);
+            SetBodyLineSpacing(footer);
             footer.Format.Font.Size = 8;
             footer.Format.Font.Color = Colors.Gray;
             footer.Format.SpaceBefore = Unit.FromMillimeter(6);
@@ -253,15 +270,27 @@ public sealed class InvoicePdfRenderer
         run.Bold = bold;
     }
 
+    private static void SetBodyLineSpacing(Paragraph paragraph)
+    {
+        paragraph.Format.LineSpacingRule = LineSpacingRule.AtLeast;
+        paragraph.Format.LineSpacing = Unit.FromPoint(12);
+    }
+
     private static void SetCell(Cell cell, string text, ParagraphAlignment alignment)
     {
         var paragraph = cell.AddParagraph(text ?? "");
         paragraph.Format.Alignment = alignment;
         // Vnitřní odsazení textu od svislých linek (MigraDoc nemá padding buňky).
-        var padding = Unit.FromMillimeter(1.5);
+        var padding = Unit.FromMillimeter(0.8);
         paragraph.Format.LeftIndent = padding;
         paragraph.Format.RightIndent = padding;
         cell.VerticalAlignment = VerticalAlignment.Center;
+    }
+
+    private static void SetRowPadding(Row row)
+    {
+        row.TopPadding = Unit.FromMillimeter(1.1);
+        row.BottomPadding = Unit.FromMillimeter(1.1);
     }
 
     private static string SupplierName(TaxSubject supplier)
@@ -280,9 +309,9 @@ public sealed class InvoicePdfRenderer
 
     private static string FormatRate(VatRateKind rate) => rate switch
     {
-        VatRateKind.Reduced12 => "12 %",
-        VatRateKind.Zero0 => "0 %",
-        _ => "21 %"
+        VatRateKind.Reduced12 => "12%",
+        VatRateKind.Zero0 => "0%",
+        _ => "21%"
     };
 
     private static string? JoinAddress(string? street, string? houseNumber)

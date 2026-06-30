@@ -74,6 +74,65 @@ public sealed class IssuedInvoiceTests
     }
 
     [Fact]
+    public void PdfRenderer_Renders_Issued_Invoice_With_Qr_And_Wide_Amounts()
+    {
+        var targetPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.pdf");
+        try
+        {
+            var supplier = new TaxSubject
+            {
+                DisplayName = "Testovací dodavatel",
+                Street = "Testovací",
+                HouseNumber = "1",
+                PostalCode = "28932",
+                City = "Testov",
+                Ico = "12345678",
+                Dic = "CZ12345678",
+                BankAccount = "123456789/0100"
+            };
+
+            var invoice = new IssuedInvoice
+            {
+                Number = "20260006",
+                IssueDate = new DateOnly(2026, 6, 30),
+                TaxableSupplyDate = new DateOnly(2026, 6, 30),
+                DueDate = new DateOnly(2026, 7, 14),
+                CustomerName = "Testovací odběratel s.r.o.",
+                CustomerStreet = "Odběratelská",
+                CustomerHouseNumber = "2532/19",
+                CustomerPostalCode = "19000",
+                CustomerCity = "Praha",
+                CustomerIco = "87654321",
+                CustomerDic = "CZ87654321",
+                IntroText = "Za červen 2026 Vám fakturujeme:",
+                Items =
+                {
+                    new IssuedInvoiceItem
+                    {
+                        Description = "MQPS + LS + MDP + OCRS + TMA",
+                        Quantity = 147,
+                        Unit = "h",
+                        UnitPriceCzk = 867m,
+                        VatRate = VatRateKind.Standard21
+                    }
+                }
+            };
+
+            new InvoicePdfRenderer().Render(supplier, invoice, targetPath);
+
+            Assert.True(File.Exists(targetPath));
+            Assert.True(new FileInfo(targetPath).Length > 1000);
+        }
+        finally
+        {
+            if (File.Exists(targetPath))
+            {
+                File.Delete(targetPath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Repository_RoundTrips_Invoice_With_Items_And_Generates_Numbers()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");

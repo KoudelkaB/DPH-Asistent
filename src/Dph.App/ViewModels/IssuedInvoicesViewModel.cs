@@ -296,7 +296,8 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         await SaveInvoiceAsync();
         await _saveSupplierAsync();
         var domain = SelectedInvoice.ToDomain();
-        var defaultName = BuildPdfFileName(domain);
+        var supplier = _getSupplier();
+        var defaultName = BuildPdfFileName(supplier, domain);
         var target = await PickPdfTargetAsync(_pdfDirectory, defaultName);
         if (string.IsNullOrWhiteSpace(target))
         {
@@ -306,7 +307,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
 
         try
         {
-            _pdfRenderer.Render(_getSupplier(), domain, target);
+            _pdfRenderer.Render(supplier, domain, target);
         }
         catch (Exception exception)
         {
@@ -333,13 +334,26 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         _setStatus(message);
     }
 
-    // Název PDF = "číslo-odběratel.pdf" (text z levého sloupce), očištěný od znaků nepovolených v cestě.
-    private static string BuildPdfFileName(IssuedInvoice invoice)
+    // Název PDF = "číslo – dodavatel – odběratel.pdf", očištěný od znaků nepovolených v cestě.
+    private static string BuildPdfFileName(TaxSubject supplier, IssuedInvoice invoice)
     {
-        var raw = string.IsNullOrWhiteSpace(invoice.CustomerName)
-            ? invoice.Number
-            : $"{invoice.Number}-{invoice.CustomerName}";
+        var parts = new[] { invoice.Number, SupplierName(supplier), invoice.CustomerName }
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!.Trim());
+        var raw = string.Join(" – ", parts);
         var sanitized = string.Concat(raw.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
         return $"{(string.IsNullOrWhiteSpace(sanitized) ? "faktura" : sanitized)}.pdf";
+    }
+
+    private static string? SupplierName(TaxSubject supplier)
+    {
+        var personName = string.Join(" ", new[] { supplier.FirstName, supplier.LastName }
+            .Where(x => !string.IsNullOrWhiteSpace(x)));
+        if (!string.IsNullOrWhiteSpace(supplier.DisplayName))
+        {
+            return supplier.DisplayName.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(personName) ? null : personName.Trim();
     }
 }
