@@ -40,6 +40,20 @@
 
   <launchable type="desktop-id">io.github.koudelkab.DphAsistent.desktop</launchable>
 
+  <!-- Obrázky musí ležet na těchto URL před buildem/submission (viz packaging/screenshots/README.md). -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Přehled období DPH a evidence dokladů</caption>
+      <caption xml:lang="en">VAT period overview and document records</caption>
+      <image>https://raw.githubusercontent.com/KoudelkaB/DPH-Asistent/main/packaging/screenshots/01-prehled.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Vystavení faktury</caption>
+      <caption xml:lang="en">Issuing an invoice</caption>
+      <image>https://raw.githubusercontent.com/KoudelkaB/DPH-Asistent/main/packaging/screenshots/02-faktura.png</image>
+    </screenshot>
+  </screenshots>
+
   <url type="homepage">https://github.com/KoudelkaB/DPH-Asistent</url>
   <url type="bugtracker">https://github.com/KoudelkaB/DPH-Asistent/issues</url>
   <url type="vcs-browser">https://github.com/KoudelkaB/DPH-Asistent</url>

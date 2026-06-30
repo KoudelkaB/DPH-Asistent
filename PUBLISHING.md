@@ -119,9 +119,14 @@ Postup submission:
    `flatpak run --command=appstreamcli org.flatpak.Builder validate ...metainfo.xml`.
 4. Otevři PR; po schválení vznikne repozitář `flathub/io.github.koudelkab.DphAsistent`.
 
-> Tip: AppStream metainfo a `.desktop` v `packaging/linux/` jsou už ve formě, kterou
-> Flathub vyžaduje (RDNS id, `metadata_license`, `project_license`, screenshoty doplň
-> později do `<screenshots>`).
+> **Screenshoty:** metainfo už `<screenshots>` obsahuje a odkazuje na obrázky v
+> `packaging/screenshots/`. Před submission tam musí ležet skutečné PNG se shodnými názvy
+> a být pushnuté do `main` (požadavky viz [packaging/screenshots/README.md](packaging/screenshots/README.md)).
+>
+> **Pozn. k lokální instalaci `.flatpak`:** při instalaci staženého souboru ukazuje GNOME
+> Software „neznámou licenci“, „žádná metadata“, „neznámou velikost“ a „není součástí
+> repozitáře“. To je vlastnost *sideloadovaného bundlu* – metainfo licenci (MIT) i URL
+> obsahuje (ověřeno `appstreamcli compose`) a po publikaci na Flathub se zobrazí správně.
 
 ---
 
