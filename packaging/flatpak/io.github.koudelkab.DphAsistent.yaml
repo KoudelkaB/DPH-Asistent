@@ -18,8 +18,10 @@ command: DphAsistent
 
 finish-args:
   - --share=ipc
-  - --socket=wayland
-  - --socket=fallback-x11
+  # Avalonia používá na Linuxu X11 backend (i na Waylandu přes XWayland), proto
+  # plný --socket=x11; fallback-x11 by na Wayland session X11 nesdílel a app spadne
+  # na "XOpenDisplay failed".
+  - --socket=x11
   - --device=dri
   # ARES, kurzy ČNB a kontrola dostupnosti EPO endpointů.
   - --share=network
