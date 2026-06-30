@@ -1,0 +1,44 @@
+# Flatpak manifest pro DPH Asistent.
+#
+# Aplikace se balí ze self-contained .NET publish výstupu (linux-x64), který
+# připraví CI do adresáře `staging/`. Tím odpadá nutnost mít v sandboxu .NET SDK
+# a offline NuGet zdroje. Před spuštěním flatpak-builderu musí `staging/` obsahovat:
+#
+#   staging/publish/                         <- výstup `dotnet publish ... --self-contained`
+#   staging/io.github.koudelkab.DphAsistent.desktop
+#   staging/io.github.koudelkab.DphAsistent.metainfo.xml
+#   staging/icons/<size>x<size>/io.github.koudelkab.DphAsistent.png
+#
+# Tuto strukturu naplní krok v .github/workflows/release.yml.
+app-id: io.github.koudelkab.DphAsistent
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: DphAsistent
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # ARES, kurzy ČNB a kontrola dostupnosti EPO endpointů.
+  - --share=network
+  # Ukládání PDF faktur a EPO exportů mimo sandbox (volba cesty uživatelem).
+  - --filesystem=xdg-documents
+  - --filesystem=xdg-download
+
+modules:
+  - name: dph-asistent
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/dph-asistent
+      - cp -r publish/. /app/lib/dph-asistent/
+      - chmod +x /app/lib/dph-asistent/DphAsistent
+      - install -d /app/bin
+      - ln -s /app/lib/dph-asistent/DphAsistent /app/bin/DphAsistent
+      - install -Dm644 io.github.koudelkab.DphAsistent.desktop /app/share/applications/io.github.koudelkab.DphAsistent.desktop
+      - install -Dm644 io.github.koudelkab.DphAsistent.metainfo.xml /app/share/metainfo/io.github.koudelkab.DphAsistent.metainfo.xml
+      - for s in 16 32 48 64 128 256; do install -Dm644 "icons/${s}x${s}/io.github.koudelkab.DphAsistent.png" "/app/share/icons/hicolor/${s}x${s}/apps/io.github.koudelkab.DphAsistent.png"; done
+    sources:
+      - type: dir
+        path: staging

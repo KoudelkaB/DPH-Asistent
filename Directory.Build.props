@@ -1,0 +1,14 @@
+<Project>
+  <!-- Sdílená metadata a verze pro celé řešení.
+       Verzi lze při buildu přeps: dotnet build -p:Version=1.2.3 -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Product>DPH Asistent</Product>
+    <Authors>Bohdan Koudelka</Authors>
+    <Company>Bohdan Koudelka</Company>
+    <Copyright>Copyright © 2026 Bohdan Koudelka</Copyright>
+    <Description>Desktopová aplikace pro evidenci podkladů k DPH, kontrolní hlášení a vystavování faktur.</Description>
+    <RepositoryUrl>https://github.com/KoudelkaB/DPH-Asistent</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/KoudelkaB/DPH-Asistent</PackageProjectUrl>
+  </PropertyGroup>
+</Project>

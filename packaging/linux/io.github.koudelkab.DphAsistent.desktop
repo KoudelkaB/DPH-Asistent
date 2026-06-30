@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=DPH Asistent
+GenericName=VAT assistant
+GenericName[cs]=Asistent DPH
+Comment=Evidence podkladů k DPH, kontrolní hlášení a vystavování faktur
+Comment[cs]=Evidence podkladů k DPH, kontrolní hlášení a vystavování faktur
+Comment[en]=Track Czech VAT records, control statements and issue invoices
+Exec=DphAsistent
+Icon=io.github.koudelkab.DphAsistent
+Terminal=false
+Categories=Office;Finance;
+Keywords=DPH;VAT;daně;faktura;EPO;kontrolní hlášení;
+StartupWMClass=DphAsistent

@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: BohdanKoudelka.DPHAsistent
+PackageVersion: 0.1.0
+InstallerType: inno
+Scope: machine
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ProductCode: "{21824057-8CF5-4A0C-8CFD-55B8688ECEDA}_is1"
+ReleaseDate: 2026-06-30
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/KoudelkaB/DPH-Asistent/releases/download/v0.1.0/DphAsistent-Setup-0.1.0.exe
+    # Nahraďte skutečným SHA256 instalátoru z release (viz PUBLISHING.md).
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

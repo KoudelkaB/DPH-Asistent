@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: BohdanKoudelka.DPHAsistent
+PackageVersion: 0.1.0
+PackageLocale: cs-CZ
+Publisher: Bohdan Koudelka
+PublisherUrl: https://github.com/KoudelkaB
+PublisherSupportUrl: https://github.com/KoudelkaB/DPH-Asistent/issues
+PackageName: DPH Asistent
+PackageUrl: https://github.com/KoudelkaB/DPH-Asistent
+License: MIT
+LicenseUrl: https://github.com/KoudelkaB/DPH-Asistent/blob/main/LICENSE
+Copyright: Copyright © 2026 Bohdan Koudelka
+ShortDescription: Evidence podkladů k DPH, kontrolní hlášení a vystavování faktur.
+Description: |-
+  DPH Asistent je desktopová aplikace pro evidenci podkladů k českému přiznání k DPH,
+  kontrolnímu hlášení a vystavování faktur. Generuje XML dávky pro EPO (přiznání k DPH
+  a kontrolní hlášení), umožňuje vystavovat faktury do PDF s QR platbou a data ukládá
+  lokálně do SQLite databáze. Nenahrazuje účetní ani kontrolu v portálu EPO před podáním.
+Moniker: dph-asistent
+Tags:
+  - dph
+  - vat
+  - epo
+  - faktury
+  - dane
+  - finance
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.koudelkab.DphAsistent</id>
+
+  <name>DPH Asistent</name>
+  <summary>Track Czech VAT records, control statements and issue invoices</summary>
+  <summary xml:lang="cs">Evidence podkladů k DPH, kontrolní hlášení a vystavování faktur</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.koudelkab">
+    <name>Bohdan Koudelka</name>
+  </developer>
+
+  <description>
+    <p>
+      DPH Asistent is a desktop application for keeping Czech VAT records, generating
+      EPO XML batches (VAT return and control statement) and issuing invoices. Data is
+      stored locally in a SQLite database.
+    </p>
+    <p xml:lang="cs">
+      DPH Asistent je desktopová aplikace pro evidenci podkladů k českému přiznání k DPH,
+      kontrolnímu hlášení a vystavování faktur. Data ukládá lokálně do SQLite databáze.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>VAT period records with automatic base, VAT and gross amount calculation (21 %, 12 %, 0 %)</li>
+      <li>Issued, received and reverse-charge documents with foreign currency support (CNB rate)</li>
+      <li>ARES subject lookup and tax office directory</li>
+      <li>EPO XML export for the VAT return and the control statement</li>
+      <li>Issued invoices with PDF output and QR payment</li>
+      <li>Import of historical EPO XML files and local database backup/restore</li>
+    </ul>
+    <p>
+      The application helps with record keeping and XML generation for EPO, but does not
+      replace an accountant, a tax advisor, or a final check in the EPO portal before filing.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.koudelkab.DphAsistent.desktop</launchable>
+
+  <url type="homepage">https://github.com/KoudelkaB/DPH-Asistent</url>
+  <url type="bugtracker">https://github.com/KoudelkaB/DPH-Asistent/issues</url>
+  <url type="vcs-browser">https://github.com/KoudelkaB/DPH-Asistent</url>
+
+  <content_rating type="oars-1.1" />
+
+  <categories>
+    <category>Office</category>
+    <category>Finance</category>
+  </categories>
+
+  <keywords>
+    <keyword>DPH</keyword>
+    <keyword>VAT</keyword>
+    <keyword>EPO</keyword>
+    <keyword translate="no">faktura</keyword>
+  </keywords>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#cdd9e8</color>
+    <color type="primary" scheme_preference="dark">#1f2937</color>
+  </branding>
+
+  <releases>
+    <release version="0.1.0" date="2026-06-30">
+      <description>
+        <p>První veřejné vydání.</p>
+        <p xml:lang="en">First public release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

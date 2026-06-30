@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="check" x1="150" y1="150" x2="226" y2="226" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#16A34A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Pozadí -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#FFFFFF" opacity="0.04"/>
+
+  <!-- Měkký stín pod dokladem -->
+  <path d="M64 50 H160 L196 86 V218 a8 8 0 0 1 -8 8 H64 a8 8 0 0 1 -8 -8 V58 a8 8 0 0 1 8 -8 Z" fill="#0B1F4D" opacity="0.28"/>
+
+  <!-- List dokladu se založeným rohem -->
+  <path d="M64 44 H160 L196 80 V212 a8 8 0 0 1 -8 8 H64 a8 8 0 0 1 -8 -8 V52 a8 8 0 0 1 8 -8 Z" fill="#FFFFFF"/>
+  <path d="M160 44 L196 80 H168 a8 8 0 0 1 -8 -8 Z" fill="#C7D7F5"/>
+
+  <!-- Wordmark DPH -->
+  <text x="80" y="128" font-family="DejaVu Sans, Arial, sans-serif" font-size="42" font-weight="700" fill="#1D4ED8" letter-spacing="1">DPH</text>
+
+  <!-- Řádky dokladu -->
+  <g fill="#CBD5E1">
+    <rect x="80" y="146" width="96" height="9" rx="4.5"/>
+    <rect x="80" y="166" width="96" height="9" rx="4.5"/>
+    <rect x="80" y="186" width="60" height="9" rx="4.5"/>
+  </g>
+
+  <!-- Zelený badge se zaškrtnutím -->
+  <circle cx="188" cy="188" r="40" fill="url(#check)" stroke="#FFFFFF" stroke-width="6"/>
+  <path d="M170 188 l12 13 l24 -27" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <AssemblyName>DphAsistent</AssemblyName>
+    <AssemblyTitle>DPH Asistent</AssemblyTitle>
+    <ApplicationIcon>Assets/dph-asistent.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

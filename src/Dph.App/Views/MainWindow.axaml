@@ -14,8 +14,8 @@
         MinHeight="620"
         x:Class="Dph.App.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Icon="/Assets/avalonia-logo.ico"
-        Title="DPH Assistant">
+        Icon="/Assets/dph-asistent.ico"
+        Title="DPH Asistent">
 
     <Design.DataContext>
         <vm:MainWindowViewModel/>
@@ -24,7 +24,7 @@
     <Grid RowDefinitions="Auto,* ,Auto" Background="#F4F6F8">
         <Border Grid.Row="0" Background="#1F2937" Padding="14,10">
             <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
-                <TextBlock Text="DPH Assistant" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="DPH Asistent" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
                 <TextBlock Grid.Column="1" Text="{Binding SummaryText}" Foreground="#D1D5DB" Margin="18,0,0,0" VerticalAlignment="Center"/>
                 <Button Grid.Column="2"
                         Command="{Binding CopyAmountToPayCommand}"

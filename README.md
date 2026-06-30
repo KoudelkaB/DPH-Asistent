@@ -1,8 +1,16 @@
-# DPH Assistant
+# DPH Asistent
 
-DPH Assistant je desktopová aplikace pro evidenci podkladů k českému přiznání k DPH, kontrolnímu hlášení a vystavování faktur. Je napsaná v .NET/Avalonia a data ukládá lokálně do SQLite databáze.
+DPH Asistent je desktopová aplikace pro evidenci podkladů k českému přiznání k DPH, kontrolnímu hlášení a vystavování faktur. Je napsaná v .NET/Avalonia a data ukládá lokálně do SQLite databáze.
 
 > Aplikace pomáhá s evidencí a generováním XML pro EPO, ale nenahrazuje účetní, daňového poradce ani kontrolu v portálu EPO před podáním.
+
+## Instalace
+
+- **Windows** – stáhněte instalátor `DphAsistent-Setup-x.y.z.exe` ze [stránky Releases](https://github.com/KoudelkaB/DPH-Asistent/releases), nebo (po publikaci) `winget install BohdanKoudelka.DPHAsistent`.
+- **Linux** – nainstalujte přiložený `DphAsistent-x.y.z.flatpak` (`flatpak install ./DphAsistent-x.y.z.flatpak`), nebo (po publikaci) z Flathubu `flatpak install flathub io.github.koudelkab.DphAsistent`.
+- K dispozici jsou i přenosné archivy (`*-portable.zip` / `*-portable.tar.gz`) bez instalace.
+
+Sestavení balíčků a publikace na Flathub/Winget jsou popsané v [PUBLISHING.md](PUBLISHING.md).
 
 ## Hlavní funkce
 

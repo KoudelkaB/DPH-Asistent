@@ -1,3 +1,11 @@
 **/bin/
 **/obj/
 src/Dph.App/bin/Debug/net10.0/Avalonia.Base.dll
+
+# Výstupy balení / publikace
+/dist/
+/publish/
+packaging/flatpak/staging/
+.flatpak-builder/
+_flatpak_build/
+_flatpak_repo/
