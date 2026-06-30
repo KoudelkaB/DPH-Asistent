@@ -48,9 +48,9 @@ jobs:
     needs: version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -78,7 +78,7 @@ jobs:
           cd publish/win-x64
           7z a -tzip "../../dist/DphAsistent-${{ needs.version.outputs.version }}-win-x64-portable.zip" "*" >/dev/null
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windows
           path: dist/*
@@ -88,9 +88,9 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -139,7 +139,7 @@ jobs:
             "dist/DphAsistent-${{ needs.version.outputs.version }}.flatpak" \
             ${APP_ID} --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: linux
           path: dist/*
@@ -150,7 +150,7 @@ jobs:
     needs: [version, windows, linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -164,7 +164,7 @@ jobs:
           echo "Obsah dist/:"; ls -la
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: DPH Asistent ${{ needs.version.outputs.version }}
           tag_name: v${{ needs.version.outputs.version }}
