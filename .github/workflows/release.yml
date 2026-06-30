@@ -66,13 +66,15 @@ jobs:
       - name: Build Inno Setup installer
         shell: bash
         run: |
+          # Inno řeší relativní cesty v [Files] vůči adresáři skriptu, proto absolutní cesta.
           iscc //DAppVersion=${{ needs.version.outputs.version }} \
-               //DSourceDir="publish\\win-x64" \
+               //DSourceDir="${GITHUB_WORKSPACE}\\publish\\win-x64" \
                packaging/windows/DphAsistent.iss
 
       - name: Portable zip
         shell: bash
         run: |
+          mkdir -p dist
           cd publish/win-x64
           7z a -tzip "../../dist/DphAsistent-${{ needs.version.outputs.version }}-win-x64-portable.zip" "*" >/dev/null
 
