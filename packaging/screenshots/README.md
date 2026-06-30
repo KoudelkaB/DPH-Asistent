@@ -11,6 +11,7 @@ screenshoty zobrazily v obchodech a prošla validace Flathubu, musí tu ležet
 |--------|---------|
 | `01-prehled.png` | Přehled období DPH a evidence dokladů (hlavní – `type="default"`) |
 | `02-faktura.png` | Vystavení faktury |
+| `03-subjekty.png` | Adresář odběratelů a dodavatelů |
 
 Další screenshoty můžeš přidat – stačí doplnit `<screenshot>` do metainfo a soubor sem.
 

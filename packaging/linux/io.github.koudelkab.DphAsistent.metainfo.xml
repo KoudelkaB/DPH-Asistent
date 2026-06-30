@@ -52,6 +52,11 @@
       <caption xml:lang="en">Issuing an invoice</caption>
       <image>https://raw.githubusercontent.com/KoudelkaB/DPH-Asistent/main/packaging/screenshots/02-faktura.png</image>
     </screenshot>
+    <screenshot>
+      <caption>Adresář odběratelů a dodavatelů</caption>
+      <caption xml:lang="en">Directory of customers and suppliers</caption>
+      <image>https://raw.githubusercontent.com/KoudelkaB/DPH-Asistent/main/packaging/screenshots/03-subjekty.png</image>
+    </screenshot>
   </screenshots>
 
   <url type="homepage">https://github.com/KoudelkaB/DPH-Asistent</url>
