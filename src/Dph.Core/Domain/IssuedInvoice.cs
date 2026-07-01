@@ -36,6 +36,15 @@ public sealed class IssuedInvoice
     public string? Note { get; set; }
     public string? Footer { get; set; }
 
+    // Faktura už opustila pracovní stav: PDF bylo vytvořeno nebo byla vložena do přiznání DPH.
+    // Další změna/smazání se potvrzuje a změna se značí podobně jako u podaného období.
+    public DateTimeOffset? PdfExportedAt { get; set; }
+    public DateTimeOffset? VatInsertedAt { get; set; }
+    public DateTimeOffset? ChangedAt { get; set; }
+
+    public bool IsLockedByHistory => PdfExportedAt is not null || VatInsertedAt is not null;
+    public bool HasPendingChanges => ChangedAt is not null;
+
     public List<IssuedInvoiceItem> Items { get; set; } = [];
 
     public decimal TotalBaseCzk => VatCalculator.Money(Items.Sum(x => x.LineBaseCzk));

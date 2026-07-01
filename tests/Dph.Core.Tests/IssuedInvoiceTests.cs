@@ -174,11 +174,25 @@ public sealed class IssuedInvoiceTests
         Assert.Equal(1000.5m, item.UnitPriceCzk);
         Assert.Equal(VatRateKind.Standard21, item.VatRate);
 
+        var listItem = Assert.Single(await repository.LoadIssuedInvoicesAsync());
+        Assert.Single(listItem.Items);
+        Assert.Equal(3001.5m, listItem.TotalBaseCzk);
+
         // Editace = smaž a vlož položky; nesmí zůstat duplicity.
         loaded.Items.Add(new IssuedInvoiceItem { Description = "Doprava", Quantity = 1, UnitPriceCzk = 200, VatRate = VatRateKind.Standard21 });
         await repository.SaveIssuedInvoiceAsync(loaded);
         var reloaded = await repository.LoadIssuedInvoiceAsync(invoice.Id);
         Assert.Equal(2, reloaded!.Items.Count);
+
+        await repository.MarkIssuedInvoicePdfExportedAsync(invoice.Id, new DateTimeOffset(2026, 7, 1, 10, 0, 0, TimeSpan.Zero));
+        await repository.MarkIssuedInvoiceVatInsertedAsync(invoice.Id, new DateTimeOffset(2026, 7, 2, 10, 0, 0, TimeSpan.Zero));
+        await repository.MarkIssuedInvoiceChangedAsync(invoice.Id, new DateTimeOffset(2026, 7, 3, 10, 0, 0, TimeSpan.Zero));
+        var protectedInvoice = await repository.LoadIssuedInvoiceAsync(invoice.Id);
+        Assert.True(protectedInvoice!.IsLockedByHistory);
+        Assert.True(protectedInvoice.HasPendingChanges);
+        Assert.NotNull(protectedInvoice.PdfExportedAt);
+        Assert.NotNull(protectedInvoice.VatInsertedAt);
+        Assert.NotNull(protectedInvoice.ChangedAt);
 
         await repository.DeleteIssuedInvoiceAsync(invoice.Id);
         Assert.Null(await repository.LoadIssuedInvoiceAsync(invoice.Id));

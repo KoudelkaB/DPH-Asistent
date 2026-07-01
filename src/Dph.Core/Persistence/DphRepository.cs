@@ -60,6 +60,7 @@ public sealed class DphRepository(string databasePath)
             create table if not exists invoice_lines (
                 id integer primary key,
                 period_id integer not null,
+                issued_invoice_id integer null,
                 kind text not null,
                 counterparty_id integer null,
                 counterparty_name text not null,
@@ -115,6 +116,9 @@ public sealed class DphRepository(string databasePath)
                 intro_text text null,
                 note text null,
                 footer text null,
+                pdf_exported_at text null,
+                vat_inserted_at text null,
+                changed_at text null,
                 created_at text not null
             );
             create table if not exists issued_invoice_items (
@@ -132,9 +136,13 @@ public sealed class DphRepository(string databasePath)
         await EnsureColumnAsync(connection, "periods", "exported_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "periods", "changed_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "invoice_lines", "partial_deduction", "integer not null default 0", cancellationToken);
+        await EnsureColumnAsync(connection, "invoice_lines", "issued_invoice_id", "integer null", cancellationToken);
         await EnsureColumnAsync(connection, "tax_subjects", "bank_account", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "tax_subjects", "iban", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "intro_text", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "pdf_exported_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "vat_inserted_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "changed_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
@@ -393,6 +401,7 @@ public sealed class DphRepository(string databasePath)
             {
                 Id = reader.GetInt64(reader.GetOrdinal("id")),
                 PeriodId = reader.GetInt64(reader.GetOrdinal("period_id")),
+                IssuedInvoiceId = NullableLong(reader, "issued_invoice_id"),
                 Kind = Enum.Parse<InvoiceKind>(Text(reader, "kind")),
                 CounterpartyId = NullableLong(reader, "counterparty_id"),
                 CounterpartyName = Text(reader, "counterparty_name"),
@@ -419,12 +428,12 @@ public sealed class DphRepository(string databasePath)
         await using var command = connection.CreateCommand();
         command.CommandText = invoice.Id == 0
             ? """
-              insert into invoice_lines (period_id, kind, counterparty_id, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, foreign_amount, exchange_rate, vat_rate, partial_deduction, note)
-              values ($period_id, $kind, $counterparty_id, $counterparty_name, $counterparty_dic, $evidence_number, $taxable_supply_date, $tax_base_czk, $vat_czk, $currency, $foreign_amount, $exchange_rate, $vat_rate, $partial_deduction, $note)
+              insert into invoice_lines (period_id, issued_invoice_id, kind, counterparty_id, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, foreign_amount, exchange_rate, vat_rate, partial_deduction, note)
+              values ($period_id, $issued_invoice_id, $kind, $counterparty_id, $counterparty_name, $counterparty_dic, $evidence_number, $taxable_supply_date, $tax_base_czk, $vat_czk, $currency, $foreign_amount, $exchange_rate, $vat_rate, $partial_deduction, $note)
               returning id
               """
             : """
-              update invoice_lines set period_id=$period_id, kind=$kind, counterparty_id=$counterparty_id, counterparty_name=$counterparty_name, counterparty_dic=$counterparty_dic,
+              update invoice_lines set period_id=$period_id, issued_invoice_id=$issued_invoice_id, kind=$kind, counterparty_id=$counterparty_id, counterparty_name=$counterparty_name, counterparty_dic=$counterparty_dic,
                   evidence_number=$evidence_number, taxable_supply_date=$taxable_supply_date, tax_base_czk=$tax_base_czk, vat_czk=$vat_czk,
                   currency=$currency, foreign_amount=$foreign_amount, exchange_rate=$exchange_rate, vat_rate=$vat_rate, partial_deduction=$partial_deduction, note=$note
               where id=$id
@@ -432,6 +441,7 @@ public sealed class DphRepository(string databasePath)
               """;
         Add(command, "$id", invoice.Id);
         Add(command, "$period_id", invoice.PeriodId);
+        Add(command, "$issued_invoice_id", invoice.IssuedInvoiceId);
         Add(command, "$kind", invoice.Kind.ToString());
         Add(command, "$counterparty_id", invoice.CounterpartyId);
         Add(command, "$counterparty_name", invoice.CounterpartyName);
@@ -457,6 +467,31 @@ public sealed class DphRepository(string databasePath)
         await using var command = connection.CreateCommand();
         command.CommandText = "delete from invoice_lines where id=$id";
         Add(command, "$id", invoiceId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<long>> LoadPeriodIdsForIssuedInvoiceAsync(long issuedInvoiceId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select distinct period_id from invoice_lines where issued_invoice_id=$issued_invoice_id";
+        Add(command, "$issued_invoice_id", issuedInvoiceId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var periodIds = new List<long>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            periodIds.Add(reader.GetInt64(0));
+        }
+
+        return periodIds;
+    }
+
+    public async Task DeleteInvoiceLinesForIssuedInvoiceAsync(long issuedInvoiceId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "delete from invoice_lines where issued_invoice_id=$issued_invoice_id";
+        Add(command, "$issued_invoice_id", issuedInvoiceId);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -505,15 +540,18 @@ public sealed class DphRepository(string databasePath)
     public async Task<List<IssuedInvoice>> LoadIssuedInvoicesAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "select * from issued_invoices order by number desc";
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<IssuedInvoice>();
-        while (await reader.ReadAsync(cancellationToken))
+        await using (var command = connection.CreateCommand())
         {
-            items.Add(ReadIssuedInvoice(reader));
+            command.CommandText = "select * from issued_invoices order by number desc";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(ReadIssuedInvoice(reader));
+            }
         }
 
+        await LoadIssuedInvoiceItemsAsync(connection, items, cancellationToken);
         return items;
     }
 
@@ -534,16 +572,7 @@ public sealed class DphRepository(string databasePath)
             invoice = ReadIssuedInvoice(reader);
         }
 
-        await using (var itemsCommand = connection.CreateCommand())
-        {
-            itemsCommand.CommandText = "select * from issued_invoice_items where invoice_id=$invoice_id order by sort_order, id";
-            Add(itemsCommand, "$invoice_id", id);
-            await using var reader = await itemsCommand.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                invoice.Items.Add(ReadIssuedInvoiceItem(reader, id));
-            }
-        }
+        await LoadIssuedInvoiceItemsAsync(connection, [invoice], cancellationToken);
 
         return invoice;
     }
@@ -565,6 +594,16 @@ public sealed class DphRepository(string databasePath)
             }
         }
 
+        await LoadIssuedInvoiceItemsAsync(connection, invoices, cancellationToken);
+
+        return invoices;
+    }
+
+    private static async Task LoadIssuedInvoiceItemsAsync(
+        SqliteConnection connection,
+        IEnumerable<IssuedInvoice> invoices,
+        CancellationToken cancellationToken)
+    {
         foreach (var invoice in invoices)
         {
             await using var itemsCommand = connection.CreateCommand();
@@ -576,8 +615,6 @@ public sealed class DphRepository(string databasePath)
                 invoice.Items.Add(ReadIssuedInvoiceItem(reader, invoice.Id));
             }
         }
-
-        return invoices;
     }
 
     private static IssuedInvoiceItem ReadIssuedInvoiceItem(SqliteDataReader reader, long invoiceId) => new()
@@ -602,8 +639,8 @@ public sealed class DphRepository(string databasePath)
             command.Transaction = (SqliteTransaction)transaction;
             command.CommandText = invoice.Id == 0
                 ? """
-                  insert into issued_invoices (number, issue_date, taxable_supply_date, due_date, customer_id, customer_name, customer_ico, customer_dic, customer_street, customer_house_number, customer_city, customer_postal_code, customer_country, currency, variable_symbol, payment_method, intro_text, note, footer, created_at)
-                  values ($number, $issue_date, $taxable_supply_date, $due_date, $customer_id, $customer_name, $customer_ico, $customer_dic, $customer_street, $customer_house_number, $customer_city, $customer_postal_code, $customer_country, $currency, $variable_symbol, $payment_method, $intro_text, $note, $footer, $created_at)
+                  insert into issued_invoices (number, issue_date, taxable_supply_date, due_date, customer_id, customer_name, customer_ico, customer_dic, customer_street, customer_house_number, customer_city, customer_postal_code, customer_country, currency, variable_symbol, payment_method, intro_text, note, footer, pdf_exported_at, vat_inserted_at, changed_at, created_at)
+                  values ($number, $issue_date, $taxable_supply_date, $due_date, $customer_id, $customer_name, $customer_ico, $customer_dic, $customer_street, $customer_house_number, $customer_city, $customer_postal_code, $customer_country, $currency, $variable_symbol, $payment_method, $intro_text, $note, $footer, $pdf_exported_at, $vat_inserted_at, $changed_at, $created_at)
                   returning id
                   """
                 : """
@@ -611,7 +648,8 @@ public sealed class DphRepository(string databasePath)
                       customer_id=$customer_id, customer_name=$customer_name, customer_ico=$customer_ico, customer_dic=$customer_dic,
                       customer_street=$customer_street, customer_house_number=$customer_house_number, customer_city=$customer_city,
                       customer_postal_code=$customer_postal_code, customer_country=$customer_country, currency=$currency,
-                      variable_symbol=$variable_symbol, payment_method=$payment_method, intro_text=$intro_text, note=$note, footer=$footer
+                      variable_symbol=$variable_symbol, payment_method=$payment_method, intro_text=$intro_text, note=$note, footer=$footer,
+                      pdf_exported_at=$pdf_exported_at, vat_inserted_at=$vat_inserted_at, changed_at=$changed_at
                   where id=$id
                   returning id
                   """;
@@ -635,6 +673,9 @@ public sealed class DphRepository(string databasePath)
             Add(command, "$intro_text", invoice.IntroText);
             Add(command, "$note", invoice.Note);
             Add(command, "$footer", invoice.Footer);
+            Add(command, "$pdf_exported_at", invoice.PdfExportedAt?.ToString("O"));
+            Add(command, "$vat_inserted_at", invoice.VatInsertedAt?.ToString("O"));
+            Add(command, "$changed_at", invoice.ChangedAt?.ToString("O"));
             Add(command, "$created_at", DateTimeOffset.UtcNow.ToString("O"));
             invoice.Id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? invoice.Id);
         }
@@ -669,6 +710,36 @@ public sealed class DphRepository(string databasePath)
 
         await transaction.CommitAsync(cancellationToken);
         return invoice.Id;
+    }
+
+    public async Task MarkIssuedInvoicePdfExportedAsync(long id, DateTimeOffset exportedAt, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update issued_invoices set pdf_exported_at=$exported_at, changed_at=null where id=$id";
+        Add(command, "$id", id);
+        Add(command, "$exported_at", exportedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task MarkIssuedInvoiceVatInsertedAsync(long id, DateTimeOffset insertedAt, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update issued_invoices set vat_inserted_at=$inserted_at, changed_at=null where id=$id";
+        Add(command, "$id", id);
+        Add(command, "$inserted_at", insertedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task MarkIssuedInvoiceChangedAsync(long id, DateTimeOffset changedAt, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update issued_invoices set changed_at=$changed_at where id=$id";
+        Add(command, "$id", id);
+        Add(command, "$changed_at", changedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task DeleteIssuedInvoiceAsync(long id, CancellationToken cancellationToken = default)
@@ -739,7 +810,10 @@ public sealed class DphRepository(string databasePath)
         PaymentMethod = NullableText(reader, "payment_method"),
         IntroText = NullableText(reader, "intro_text"),
         Note = NullableText(reader, "note"),
-        Footer = NullableText(reader, "footer")
+        Footer = NullableText(reader, "footer"),
+        PdfExportedAt = ParseDateTimeOffset(NullableText(reader, "pdf_exported_at")),
+        VatInsertedAt = ParseDateTimeOffset(NullableText(reader, "vat_inserted_at")),
+        ChangedAt = ParseDateTimeOffset(NullableText(reader, "changed_at"))
     };
 
     public async Task<AresSubject?> LoadAresCacheAsync(string ico, CancellationToken cancellationToken = default)

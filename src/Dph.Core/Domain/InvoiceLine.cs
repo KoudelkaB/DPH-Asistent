@@ -4,6 +4,7 @@ public sealed class InvoiceLine
 {
     public long Id { get; set; }
     public long PeriodId { get; set; }
+    public long? IssuedInvoiceId { get; set; }
     public InvoiceKind Kind { get; set; }
     public long? CounterpartyId { get; set; }
     public string CounterpartyName { get; set; } = "";

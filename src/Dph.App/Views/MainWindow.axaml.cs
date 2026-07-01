@@ -9,6 +9,8 @@ namespace Dph.App.Views;
 
 public partial class MainWindow : Window
 {
+    private bool _isSyncingCounterpartySelection;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -29,6 +31,7 @@ public partial class MainWindow : Window
             viewModel.ConfirmReexportAsync = ConfirmReexportAsync;
             viewModel.CopyToClipboardAsync = CopyToClipboardAsync;
             viewModel.Issuing.PickPdfTargetAsync = PickPdfTargetAsync;
+            viewModel.Issuing.ConfirmAsync = ConfirmAsync;
         }
     }
 
@@ -247,6 +250,28 @@ public partial class MainWindow : Window
         correctiveButton.Click += (_, _) => dialog.Close(ReexportChoice.Corrective);
 
         return await dialog.ShowDialog<ReexportChoice>(this);
+    }
+
+    private async void OnCounterpartySelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_isSyncingCounterpartySelection
+            || sender is not ListBox listBox
+            || DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        await viewModel.SelectCounterpartyAsync(listBox.SelectedItem as CounterpartyViewModel);
+
+        _isSyncingCounterpartySelection = true;
+        try
+        {
+            listBox.SelectedItem = viewModel.SelectedCounterparty;
+        }
+        finally
+        {
+            _isSyncingCounterpartySelection = false;
+        }
     }
 
     private async void OnOpened(object? sender, EventArgs e)

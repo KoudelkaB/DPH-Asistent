@@ -13,6 +13,7 @@
         MinWidth="980"
         MinHeight="620"
         x:Class="Dph.App.Views.MainWindow"
+        Name="mainWindowRoot"
         x:DataType="vm:MainWindowViewModel"
         Icon="/Assets/dph-asistent.ico"
         Title="DPH Asistent">
@@ -170,7 +171,7 @@
                                     <Button Grid.Column="2" Command="{Binding DeleteSelectedInvoiceCommand}" Content="Smazat"/>
                                 </Grid>
 
-                                <Grid Grid.Row="1" ColumnDefinitions="145,150,110,115,100,90,70,90,70,58,80,90,*" ColumnSpacing="6">
+                                <Grid Grid.Row="1" ColumnDefinitions="145,180,110,115,100,90,70,90,70,58,80,90,*" ColumnSpacing="6">
                                     <TextBlock Text="Typ"/>
                                     <TextBlock Grid.Column="1" Text="Subjekt"/>
                                     <TextBlock Grid.Column="2" Text="DIČ"/>
@@ -201,10 +202,22 @@
                                     </ListBox.Styles>
                                     <ListBox.ItemTemplate>
                                         <DataTemplate x:DataType="vm:InvoiceLineViewModel">
-                                            <Grid ColumnDefinitions="145,150,110,115,100,90,70,90,70,58,80,90,*" ColumnSpacing="6" Margin="0,2">
+                                            <Grid ColumnDefinitions="145,180,110,115,100,90,70,90,70,58,80,90,*" ColumnSpacing="6" Margin="0,2">
                                                 <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="135"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding CounterpartyName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                                <TextBox Grid.Column="2" Text="{Binding CounterpartyDic}"/>
+                                                <Grid Grid.Column="1" ColumnDefinitions="*,34" ColumnSpacing="4">
+                                                    <TextBox Text="{Binding CounterpartyName, UpdateSourceTrigger=PropertyChanged}"/>
+                                                    <ComboBox Grid.Column="1"
+                                                              ItemsSource="{Binding #mainWindowRoot.((vm:MainWindowViewModel)DataContext).Counterparties}"
+                                                              SelectedItem="{Binding Counterparty}"
+                                                              ToolTip.Tip="Vybrat z adresáře">
+                                                        <ComboBox.ItemTemplate>
+                                                            <DataTemplate x:DataType="vm:CounterpartyViewModel">
+                                                                <TextBlock Text="{Binding DisplayName}"/>
+                                                            </DataTemplate>
+                                                        </ComboBox.ItemTemplate>
+                                                    </ComboBox>
+                                                </Grid>
+                                                <TextBox Grid.Column="2" Text="{Binding CounterpartyDic, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <TextBox Grid.Column="3" Text="{Binding EvidenceNumber}"/>
                                                 <TextBox Grid.Column="4" Text="{Binding TaxableSupplyDate}"/>
                                                 <TextBox Grid.Column="5" Text="{Binding TaxBaseCzk, UpdateSourceTrigger=PropertyChanged}"/>
@@ -219,7 +232,7 @@
                                                         Background="Transparent"
                                                         HorizontalAlignment="Center" VerticalAlignment="Center">
                                                     <CheckBox IsChecked="{Binding PartialDeduction}"
-                                                              IsEnabled="{Binding IsPartialDeductionEnabled}"
+                                                              IsEnabled="{Binding IsPartialDeductionEditorEnabled}"
                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                 </Border>
                                                 <TextBox Grid.Column="10" Text="{Binding Currency}"/>
@@ -232,18 +245,8 @@
                             </Grid>
                         </Border>
 
-                        <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
+                        <Grid Grid.Row="2" ColumnDefinitions="Auto,*" ColumnSpacing="8">
                             <Button Command="{Binding ApplyCnbRateCommand}" Content="Kurz ČNB pro vybranou fakturu"/>
-                            <ComboBox Grid.Column="1"
-                                      Width="260"
-                                      ItemsSource="{Binding Counterparties}"
-                                      SelectedItem="{Binding SelectedInvoiceCounterparty}">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate x:DataType="vm:CounterpartyViewModel">
-                                        <TextBlock Text="{Binding DisplayName}"/>
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
                         </Grid>
                     </Grid>
                 </Grid>
@@ -402,7 +405,10 @@
                     <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="10">
                         <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
                             <TextBlock Text="Adresář" FontSize="15" FontWeight="SemiBold"/>
-                            <ListBox Grid.Row="1" ItemsSource="{Binding Counterparties}" SelectedItem="{Binding SelectedCounterparty}">
+                            <ListBox Grid.Row="1"
+                                     ItemsSource="{Binding Counterparties}"
+                                     SelectedItem="{Binding SelectedCounterparty, Mode=OneWay}"
+                                     SelectionChanged="OnCounterpartySelectionChanged">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate x:DataType="vm:CounterpartyViewModel">
                                         <StackPanel Margin="4">

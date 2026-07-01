@@ -33,11 +33,13 @@ public partial class MainWindowViewModel : ViewModelBase
     private readonly VatCalculator _calculator = new();
     private readonly HashSet<long> _confirmedProtectedPeriodIds = [];
     private readonly SemaphoreSlim _saveInvoicesLock = new(1, 1);
+    private readonly SemaphoreSlim _counterpartySelectionLock = new(1, 1);
     private CancellationTokenSource? _autosaveInvoicesCts;
     private bool _hasPendingInvoiceChanges;
     private bool _isLoadingInvoices;
     private bool _isSavingInvoices;
     private bool _isResolvingInvoiceCounterparty;
+    private bool _isLoading;
 
     [ObservableProperty] private TaxSubject taxSubject = new();
     [ObservableProperty] private TaxOffice? selectedTaxOffice;
@@ -45,7 +47,6 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private VatPeriod? selectedPeriod;
     [ObservableProperty] private CounterpartyViewModel? selectedCounterparty;
     [ObservableProperty] private InvoiceLineViewModel? selectedInvoice;
-    [ObservableProperty] private CounterpartyViewModel? selectedInvoiceCounterparty;
     [ObservableProperty] private string importDirectory = "";
     [ObservableProperty] private string exportDirectory = ApplicationPaths.ExportDirectory;
     [ObservableProperty] private string backupDirectory = ApplicationPaths.DataDirectory;
@@ -335,63 +336,55 @@ public partial class MainWindowViewModel : ViewModelBase
 
     partial void OnSelectedPeriodChanging(VatPeriod? value)
     {
-        _ = FlushInvoicesAutosaveAsync();
-    }
-
-    partial void OnSelectedInvoiceChanged(InvoiceLineViewModel? value)
-    {
-        SelectedInvoiceCounterparty = value?.CounterpartyId is null
-            ? null
-            : Counterparties.FirstOrDefault(x => x.Id == value.CounterpartyId.Value);
-    }
-
-    partial void OnSelectedInvoiceCounterpartyChanged(CounterpartyViewModel? value)
-    {
-        if (SelectedInvoice is null || value is null)
+        if (!_isLoading)
         {
-            return;
+            _ = FlushInvoicesAutosaveAsync();
         }
-
-        SelectedInvoice.CounterpartyId = value.Id == 0 ? null : value.Id;
-        SelectedInvoice.CounterpartyName = value.DisplayName;
-        SelectedInvoice.CounterpartyDic = value.Dic;
     }
 
     [RelayCommand]
     private async Task LoadAsync()
     {
-        await _repository.InitializeAsync();
-        ExportDirectory = await _repository.LoadSettingAsync(ExportDirectorySettingKey) ?? ApplicationPaths.ExportDirectory;
-        BackupDirectory = await _repository.LoadSettingAsync(BackupDirectorySettingKey) ?? ApplicationPaths.DataDirectory;
-        TaxSubject = await _repository.LoadTaxSubjectAsync() ?? DefaultTaxSubject();
-
-        SelectedCounterparty = null;
-        Counterparties.Clear();
-        foreach (var counterparty in await _repository.LoadCounterpartiesAsync())
+        _isLoading = true;
+        try
         {
-            Counterparties.Add(CounterpartyViewModel.FromDomain(counterparty));
-        }
+            await _repository.InitializeAsync();
+            ExportDirectory = await _repository.LoadSettingAsync(ExportDirectorySettingKey) ?? ApplicationPaths.ExportDirectory;
+            BackupDirectory = await _repository.LoadSettingAsync(BackupDirectorySettingKey) ?? ApplicationPaths.DataDirectory;
+            TaxSubject = await _repository.LoadTaxSubjectAsync() ?? DefaultTaxSubject();
 
-        Periods.Clear();
-        foreach (var period in await _repository.LoadPeriodsAsync())
-        {
-            Periods.Add(period);
-        }
+            SelectedCounterparty = null;
+            Counterparties.Clear();
+            foreach (var counterparty in await _repository.LoadCounterpartiesAsync())
+            {
+                Counterparties.Add(CounterpartyViewModel.FromDomain(counterparty));
+            }
 
-        if (Periods.Count == 0)
-        {
-            await AddPeriodAsync();
-        }
-        else
-        {
-            SelectedPeriod = Periods[0];
-        }
+            Periods.Clear();
+            foreach (var period in await _repository.LoadPeriodsAsync())
+            {
+                Periods.Add(period);
+            }
 
-        EnsureCounterpartyDraftSelected();
-        await LoadCachedTaxOfficeCatalogAsync();
-        SyncTaxOfficeSelectionFromSubject();
-        await Issuing.LoadAsync();
-        StatusMessage = "Načteno.";
+            if (Periods.Count == 0)
+            {
+                await AddPeriodAsync();
+            }
+            else
+            {
+                SelectedPeriod = Periods[0];
+            }
+
+            EnsureCounterpartyDraftSelected();
+            await LoadCachedTaxOfficeCatalogAsync();
+            SyncTaxOfficeSelectionFromSubject();
+            await Issuing.LoadAsync();
+            StatusMessage = "Načteno.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
     // Uloží poplatníka (včetně bankovního účtu/IBAN). Volá se před generováním PDF / vložením do DPH
@@ -450,7 +443,30 @@ public partial class MainWindowViewModel : ViewModelBase
     internal async Task<string> InsertIssuedInvoiceIntoVatAsync(IssuedInvoice invoice)
     {
         var period = await EnsurePeriodForAsync(invoice.TaxableSupplyDate);
+        var oldPeriodIds = invoice.Id == 0
+            ? new List<long>()
+            : await _repository.LoadPeriodIdsForIssuedInvoiceAsync(invoice.Id);
+        foreach (var periodId in oldPeriodIds.Append(period.Id).Distinct())
+        {
+            var affectedPeriod = Periods.FirstOrDefault(x => x.Id == periodId);
+            if (affectedPeriod is not null
+                && !await ConfirmProtectedPeriodChangeAsync(affectedPeriod, "vložit vydanou fakturu do DPH"))
+            {
+                return "Vložení do DPH zrušeno.";
+            }
+        }
+
+        if (invoice.Id != 0 && oldPeriodIds.Count > 0)
+        {
+            await _repository.DeleteInvoiceLinesForIssuedInvoiceAsync(invoice.Id);
+        }
+
         var inserted = await InsertIssuedInvoiceLinesAsync(invoice, period);
+
+        foreach (var oldPeriodId in oldPeriodIds.Where(id => id != period.Id))
+        {
+            await MarkPeriodChangedAsync(oldPeriodId);
+        }
 
         if (SelectedPeriod?.Id == period.Id)
         {
@@ -499,6 +515,7 @@ public partial class MainWindowViewModel : ViewModelBase
             await _repository.SaveInvoiceAsync(new InvoiceLine
             {
                 PeriodId = period.Id,
+                IssuedInvoiceId = invoice.Id == 0 ? null : invoice.Id,
                 Kind = InvoiceKind.IssuedDomestic,
                 CounterpartyId = invoice.CustomerId,
                 CounterpartyName = invoice.CustomerName,
@@ -704,36 +721,87 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void AddCounterparty()
+    private async Task AddCounterpartyAsync()
     {
-        var counterparty = new CounterpartyViewModel
+        await _counterpartySelectionLock.WaitAsync();
+        try
         {
-            Name = "Nový subjekt",
-            CountryCode = "CZ",
-            Role = CounterpartyRole.Supplier.ToString()
-        };
-        Counterparties.Add(counterparty);
-        SelectedCounterparty = counterparty;
+            if (!await TrySaveCounterpartyAsync(SelectedCounterparty))
+            {
+                return;
+            }
+
+            var counterparty = new CounterpartyViewModel
+            {
+                Name = "Nový subjekt",
+                CountryCode = "CZ",
+                Role = CounterpartyRole.Supplier.ToString()
+            };
+            Counterparties.Add(counterparty);
+            SelectedCounterparty = counterparty;
+        }
+        finally
+        {
+            _counterpartySelectionLock.Release();
+        }
     }
 
-    // Adresář se ukládá automaticky (jako poplatník na 1. záložce) – při přepnutí na jiný subjekt
+    // Adresář se ukládá automaticky (jako poplatník na 1. záložce) – před přepnutím na jiný subjekt
     // a při zavření okna. Prázdné rozpracované koncepty (viz EnsureCounterpartyDraftSelected)
     // se nepersistují.
-    partial void OnSelectedCounterpartyChanged(CounterpartyViewModel? oldValue, CounterpartyViewModel? newValue)
-        => _ = SaveCounterpartySafelyAsync(oldValue);
+    public async Task SelectCounterpartyAsync(CounterpartyViewModel? counterparty)
+    {
+        await _counterpartySelectionLock.WaitAsync();
+        try
+        {
+            if (ReferenceEquals(counterparty, SelectedCounterparty))
+            {
+                return;
+            }
 
-    public Task SaveSelectedCounterpartyAsync() => SaveCounterpartyAsync(SelectedCounterparty);
+            if (_isLoading)
+            {
+                SelectedCounterparty = counterparty;
+                return;
+            }
 
-    // Volané z fire-and-forget handleru změny výběru – výjimka se nesmí ztratit ani shodit aplikaci.
-    private async Task SaveCounterpartySafelyAsync(CounterpartyViewModel? counterparty)
+            if (!await TrySaveCounterpartyAsync(SelectedCounterparty))
+            {
+                return;
+            }
+
+            SelectedCounterparty = counterparty;
+        }
+        finally
+        {
+            _counterpartySelectionLock.Release();
+        }
+    }
+
+    public async Task SaveSelectedCounterpartyAsync()
+    {
+        await _counterpartySelectionLock.WaitAsync();
+        try
+        {
+            await SaveCounterpartyAsync(SelectedCounterparty);
+        }
+        finally
+        {
+            _counterpartySelectionLock.Release();
+        }
+    }
+
+    private async Task<bool> TrySaveCounterpartyAsync(CounterpartyViewModel? counterparty)
     {
         try
         {
             await SaveCounterpartyAsync(counterparty);
+            return true;
         }
         catch (Exception exception)
         {
             StatusMessage = $"Subjekt se nepodařilo uložit: {exception.Message}";
+            return false;
         }
     }
 
@@ -949,9 +1017,15 @@ public partial class MainWindowViewModel : ViewModelBase
 
     [RelayCommand]
     private async Task SaveInvoicesAsync()
-        => await SaveInvoicesCoreAsync(requirePendingChanges: false, successMessage: "Uloženo.");
+        => await SaveInvoicesCoreAsync(
+            requirePendingChanges: false,
+            successMessage: "Uloženo.",
+            discardProtectedChangesOnCancel: true);
 
-    private async Task<bool> SaveInvoicesCoreAsync(bool requirePendingChanges, string successMessage)
+    private async Task<bool> SaveInvoicesCoreAsync(
+        bool requirePendingChanges,
+        string successMessage,
+        bool discardProtectedChangesOnCancel = false)
     {
         if (SelectedPeriod is null)
         {
@@ -970,7 +1044,14 @@ public partial class MainWindowViewModel : ViewModelBase
             var period = Periods.FirstOrDefault(x => x.Id == periodId) ?? SelectedPeriod;
             if (!await ConfirmProtectedPeriodChangeAsync(period, "uložit změny"))
             {
-                StatusMessage = "Uložení zrušeno.";
+                if (discardProtectedChangesOnCancel)
+                {
+                    await DiscardInvoiceLineChangesAsync(period.Id);
+                    StatusMessage = $"Změny období {period.Label} zrušeny.";
+                    return true;
+                }
+
+                StatusMessage = "Změna zrušena.";
                 return false;
             }
 
@@ -1015,9 +1096,23 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         invoice.Id = domain.Id;
         invoice.PeriodId = domain.PeriodId;
+        invoice.IssuedInvoiceId = domain.IssuedInvoiceId;
         invoice.CounterpartyId = domain.CounterpartyId;
         invoice.CounterpartyName = domain.CounterpartyName;
         invoice.CounterpartyDic = domain.CounterpartyDic ?? "";
+        invoice.Counterparty = domain.CounterpartyId is null
+            ? null
+            : Counterparties.FirstOrDefault(x => x.Id == domain.CounterpartyId.Value);
+    }
+
+    private async Task DiscardInvoiceLineChangesAsync(long periodId)
+    {
+        if (SelectedPeriod?.Id == periodId)
+        {
+            await LoadInvoicesAsync();
+        }
+
+        _hasPendingInvoiceChanges = false;
     }
 
     private InvoiceLine PrepareInvoiceForSave(InvoiceLineViewModel invoice)
@@ -1537,6 +1632,7 @@ public partial class MainWindowViewModel : ViewModelBase
         invoice.CounterpartyId = counterparty.Id == 0 ? null : counterparty.Id;
         invoice.CounterpartyName = counterparty.DisplayName;
         invoice.CounterpartyDic = counterparty.Dic;
+        invoice.Counterparty = counterparty;
     }
 
     private static bool NeedsAresName(string? name)
@@ -1569,7 +1665,10 @@ public partial class MainWindowViewModel : ViewModelBase
         try
         {
             await Task.Delay(500, cancellationToken);
-            await SaveInvoicesCoreAsync(requirePendingChanges: true, successMessage: "Automaticky uloženo.");
+            await SaveInvoicesCoreAsync(
+                requirePendingChanges: true,
+                successMessage: "Automaticky uloženo.",
+                discardProtectedChangesOnCancel: true);
         }
         catch (OperationCanceledException)
         {
@@ -1579,7 +1678,10 @@ public partial class MainWindowViewModel : ViewModelBase
     private async Task<bool> FlushInvoicesAutosaveAsync()
     {
         _autosaveInvoicesCts?.Cancel();
-        return await SaveInvoicesCoreAsync(requirePendingChanges: true, successMessage: "Automaticky uloženo.");
+        return await SaveInvoicesCoreAsync(
+            requirePendingChanges: true,
+            successMessage: "Automaticky uloženo.",
+            discardProtectedChangesOnCancel: true);
     }
 
     // skipIssued: vynechá kopírování vydaných řádků (kromě souhrnu KH A5) – použije se, když cílové
@@ -1683,6 +1785,7 @@ public partial class MainWindowViewModel : ViewModelBase
         invoice.CounterpartyId = reference.Id;
         invoice.CounterpartyName = reference.Name;
         invoice.CounterpartyDic = reference.Dic ?? "";
+        invoice.Counterparty = Counterparties.FirstOrDefault(x => x.Id == reference.Id);
     }
 
     private CounterpartyViewModel? FindCounterparty(long? id, string? dic)
@@ -1776,6 +1879,7 @@ public partial class MainWindowViewModel : ViewModelBase
             invoice.CounterpartyId = counterparty.Id == 0 ? null : counterparty.Id;
             invoice.CounterpartyName = counterparty.DisplayName;
             invoice.CounterpartyDic = counterparty.Dic;
+            invoice.Counterparty = counterparty;
         }
     }
 

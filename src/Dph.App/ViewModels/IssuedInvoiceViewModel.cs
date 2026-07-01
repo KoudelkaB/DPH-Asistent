@@ -12,6 +12,8 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
 {
     [ObservableProperty] private long id;
 
+    public bool ItemsLoaded { get; set; } = true;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(DisplayTitle))]
     private string number = "";
@@ -41,6 +43,9 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
     [ObservableProperty] private string introText = "";
     [ObservableProperty] private string note = "";
     [ObservableProperty] private string footer = "";
+    [ObservableProperty] private DateTimeOffset? pdfExportedAt;
+    [ObservableProperty] private DateTimeOffset? vatInsertedAt;
+    [ObservableProperty] private DateTimeOffset? changedAt;
 
     public ObservableCollection<IssuedInvoiceItemViewModel> Items { get; } = [];
 
@@ -51,6 +56,9 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
 
     public string DisplayTitle
         => $"{(string.IsNullOrWhiteSpace(Number) ? "(bez čísla)" : Number)} – {(string.IsNullOrWhiteSpace(CustomerName) ? "(bez odběratele)" : CustomerName)}";
+
+    public bool IsLockedByHistory => PdfExportedAt is not null || VatInsertedAt is not null;
+    public bool HasPendingChanges => ChangedAt is not null;
 
     public string TotalsText
     {
@@ -88,11 +96,23 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
     private void OnItemChanged(object? sender, PropertyChangedEventArgs e) => OnPropertyChanged(nameof(TotalsText));
 
     partial void OnCurrencyChanged(string value) => OnPropertyChanged(nameof(TotalsText));
+    partial void OnPdfExportedAtChanged(DateTimeOffset? value) => OnHistoryStateChanged();
+    partial void OnVatInsertedAtChanged(DateTimeOffset? value) => OnHistoryStateChanged();
+    partial void OnChangedAtChanged(DateTimeOffset? value)
+    {
+        OnPropertyChanged(nameof(HasPendingChanges));
+    }
 
-    public static IssuedInvoiceViewModel FromDomain(IssuedInvoice invoice)
+    private void OnHistoryStateChanged()
+    {
+        OnPropertyChanged(nameof(IsLockedByHistory));
+    }
+
+    public static IssuedInvoiceViewModel FromDomain(IssuedInvoice invoice, bool itemsLoaded = true)
     {
         var viewModel = new IssuedInvoiceViewModel
         {
+            ItemsLoaded = itemsLoaded,
             Id = invoice.Id,
             Number = invoice.Number,
             IssueDate = invoice.IssueDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -112,7 +132,10 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
             PaymentMethod = invoice.PaymentMethod ?? "",
             IntroText = invoice.IntroText ?? "",
             Note = invoice.Note ?? "",
-            Footer = invoice.Footer ?? ""
+            Footer = invoice.Footer ?? "",
+            PdfExportedAt = invoice.PdfExportedAt,
+            VatInsertedAt = invoice.VatInsertedAt,
+            ChangedAt = invoice.ChangedAt
         };
 
         foreach (var item in invoice.Items)
@@ -145,6 +168,9 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
         IntroText = IntroText.NullIfWhiteSpace(),
         Note = Note.NullIfWhiteSpace(),
         Footer = Footer.NullIfWhiteSpace(),
+        PdfExportedAt = PdfExportedAt,
+        VatInsertedAt = VatInsertedAt,
+        ChangedAt = ChangedAt,
         Items = Items.Select(x => x.ToDomain()).ToList()
     };
 

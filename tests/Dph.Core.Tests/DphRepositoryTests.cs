@@ -148,6 +148,7 @@ public sealed class DphRepositoryTests
         await repository.SaveInvoiceAsync(new InvoiceLine
         {
             PeriodId = period.Id,
+            IssuedInvoiceId = 42,
             Kind = InvoiceKind.IssuedDomestic,
             EvidenceNumber = "2026-001",
             CounterpartyName = "Odběratel",
@@ -156,6 +157,10 @@ public sealed class DphRepositoryTests
             TaxBaseCzk = 100m,
             VatCzk = 21m
         });
+
+        var loaded = (await repository.LoadInvoicesAsync(period.Id)).Single();
+        Assert.Equal(42, loaded.IssuedInvoiceId);
+        Assert.Equal([period.Id], await repository.LoadPeriodIdsForIssuedInvoiceAsync(42));
 
         await repository.DeletePeriodAsync(period.Id);
 

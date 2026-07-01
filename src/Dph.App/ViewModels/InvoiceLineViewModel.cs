@@ -9,6 +9,7 @@ namespace Dph.App.ViewModels;
 public partial class InvoiceLineViewModel : ViewModelBase
 {
     private bool _isRecalculating;
+    private bool _isApplyingCounterparty;
 
     // "Reverse" = přijetí služby od osoby neusazené v tuzemsku (§108, zahraniční SaaS apod.),
     // ř.12/13 + odpočet ř.43/44, mimo kontrolní hlášení. Viz InvoiceKind.ReverseCharge.
@@ -32,14 +33,20 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private long periodId;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEditorEnabled))]
+    private long? issuedInvoiceId;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowPartialDeduction))]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEditorEnabled))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     private string kind = "Přijatá";
 
     [ObservableProperty] private long? counterpartyId;
     [ObservableProperty] private string counterpartyName = "";
     [ObservableProperty] private string counterpartyDic = "";
+    [ObservableProperty] private CounterpartyViewModel? counterparty;
     [ObservableProperty] private string evidenceNumber = "";
     [ObservableProperty] private string taxableSupplyDate = DateOnly.FromDateTime(DateTime.Today).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     [ObservableProperty] private string taxBaseCzk = "0";
@@ -47,6 +54,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEditorEnabled))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     private string grossCzk = "0";
 
@@ -59,6 +67,8 @@ public partial class InvoiceLineViewModel : ViewModelBase
     // Povolený jen nad limitem KH; pod limitem necháváme uloženou hodnotu, ale needitovatelnou.
     public bool IsPartialDeductionEnabled
         => ShowPartialDeduction && ParseDecimal(GrossCzk) > PartialDeductionLimitCzk;
+
+    public bool IsPartialDeductionEditorEnabled => IsPartialDeductionEnabled;
 
     public string PartialDeductionTooltip => IsPartialDeductionEnabled
         ? "Krácený / poměrný odpočet – v kontrolním hlášení nastaví pomer=A."
@@ -84,6 +94,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
         {
             Id = invoice.Id,
             PeriodId = invoice.PeriodId,
+            IssuedInvoiceId = invoice.IssuedInvoiceId,
             Kind = KindText(invoice.Kind),
             CounterpartyId = invoice.CounterpartyId,
             CounterpartyName = invoice.CounterpartyName,
@@ -121,6 +132,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
     {
         Id = Id,
         PeriodId = PeriodId,
+        IssuedInvoiceId = IssuedInvoiceId,
         Kind = ParseKind(Kind),
         CounterpartyId = CounterpartyId,
         CounterpartyName = CounterpartyName,
@@ -136,6 +148,42 @@ public partial class InvoiceLineViewModel : ViewModelBase
         ExchangeRate = ExchangeRate.NullIfWhiteSpace() is null ? null : ParseDecimal(ExchangeRate),
         Note = Note.NullIfWhiteSpace()
     };
+
+    partial void OnCounterpartyChanged(CounterpartyViewModel? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        _isApplyingCounterparty = true;
+        try
+        {
+            CounterpartyId = value.Id == 0 ? null : value.Id;
+            CounterpartyName = value.DisplayName;
+            CounterpartyDic = value.Dic;
+        }
+        finally
+        {
+            _isApplyingCounterparty = false;
+        }
+    }
+
+    partial void OnCounterpartyNameChanged(string value) => DetachCounterpartyIfEdited(value, Counterparty?.DisplayName);
+    partial void OnCounterpartyDicChanged(string value) => DetachCounterpartyIfEdited(value, Counterparty?.Dic);
+
+    private void DetachCounterpartyIfEdited(string value, string? selectedValue)
+    {
+        if (_isApplyingCounterparty
+            || Counterparty is null
+            || string.Equals(value, selectedValue ?? "", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Counterparty = null;
+        CounterpartyId = null;
+    }
 
     // Základ, DPH i částka s DPH jdou zadat libovolně; ostatní dvě se dopočítají podle sazby.
     // _isRecalculating brání zacyklení, protože každé přepsání zase spustí tyto handlery.
