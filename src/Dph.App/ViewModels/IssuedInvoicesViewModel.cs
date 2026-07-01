@@ -24,6 +24,10 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
     private readonly InvoicePdfRenderer _pdfRenderer = new();
     private readonly HashSet<long> _hydratedInvoiceIds = [];
 
+    // Potlačí automatické uložení "opouštěné" faktury při programové změně výběru (mazání),
+    // kde by se právě smazaná faktura okamžitě uložila zpět.
+    private bool _suppressAutoSave;
+
     private string _pdfDirectory = ApplicationPaths.ExportDirectory;
 
     [ObservableProperty] private IssuedInvoiceViewModel? selectedInvoice;
@@ -67,24 +71,41 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         SelectedInvoice = Invoices.FirstOrDefault();
     }
 
-    // Položky se načítají líně až při výběru faktury (seznam drží jen hlavičky).
-    async partial void OnSelectedInvoiceChanged(IssuedInvoiceViewModel? value)
+    // Faktura se ukládá automaticky při přepnutí na jinou a při zavření okna – "Uložit fakturu"
+    // tak není potřeba (tlačítka "Vložit do DPH" a "Uložit PDF" ukládají také). Přepnutí výběru
+    // při mazání faktury se přeskočí, jinak by se smazaná faktura hned zase vložila zpět.
+    async partial void OnSelectedInvoiceChanged(IssuedInvoiceViewModel? oldValue, IssuedInvoiceViewModel? newValue)
     {
-        if (value is null || value.Id == 0 || !_hydratedInvoiceIds.Add(value.Id))
+        if (!_suppressAutoSave)
+        {
+            // Handler je async void – neošetřená výjimka by shodila celou aplikaci, proto ji tady
+            // zachytíme a jen zobrazíme ve stavovém řádku.
+            try
+            {
+                await SaveInvoiceAsync(oldValue);
+            }
+            catch (Exception exception)
+            {
+                _setStatus($"Fakturu se nepodařilo uložit: {exception.Message}");
+            }
+        }
+
+        // Položky se načítají líně až při výběru faktury (seznam drží jen hlavičky).
+        if (newValue is null || newValue.Id == 0 || !_hydratedInvoiceIds.Add(newValue.Id))
         {
             return;
         }
 
-        var full = await _repository.LoadIssuedInvoiceAsync(value.Id);
+        var full = await _repository.LoadIssuedInvoiceAsync(newValue.Id);
         if (full is null)
         {
             return;
         }
 
-        value.Items.Clear();
+        newValue.Items.Clear();
         foreach (var item in full.Items)
         {
-            value.Items.Add(IssuedInvoiceItemViewModel.FromDomain(item));
+            newValue.Items.Add(IssuedInvoiceItemViewModel.FromDomain(item));
         }
     }
 
@@ -99,11 +120,26 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         SelectedInvoice.CustomerName = value.DisplayName;
         SelectedInvoice.CustomerIco = value.Ico;
         SelectedInvoice.CustomerDic = value.Dic;
+        SelectedInvoice.CustomerStreet = value.Street;
+        SelectedInvoice.CustomerHouseNumber = value.HouseNumber;
+        SelectedInvoice.CustomerCity = value.City;
+        SelectedInvoice.CustomerPostalCode = value.PostalCode;
+        SelectedInvoice.CustomerCountry = CountryDisplayName(value.CountryCode);
     }
+
+    private static string CountryDisplayName(string countryCode)
+        => string.IsNullOrWhiteSpace(countryCode) || countryCode.Equals("CZ", StringComparison.OrdinalIgnoreCase)
+            ? "Česká republika"
+            : countryCode;
 
     [RelayCommand]
     private async Task NewInvoiceAsync()
     {
+        // Rozpracovanou fakturu uložíme jako první – číslo nové pak vychází čistě z DB a nemůže
+        // kolidovat (UNIQUE constraint na issued_invoices.number). Uložení už proběhlo, takže
+        // automatické uložení "opouštěné" faktury při přepnutí výběru tady potlačíme.
+        await SaveInvoiceAsync(SelectedInvoice);
+
         var number = await _repository.NextInvoiceNumberAsync(DateTime.Today.Year);
         var invoice = new IssuedInvoiceViewModel
         {
@@ -111,8 +147,18 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             IntroText = DefaultIntroText(DateTime.Today)
         };
         invoice.Items.Add(new IssuedInvoiceItemViewModel());
-        Invoices.Insert(0, invoice);
-        SelectedInvoice = invoice;
+
+        _suppressAutoSave = true;
+        try
+        {
+            Invoices.Insert(0, invoice);
+            SelectedInvoice = invoice;
+        }
+        finally
+        {
+            _suppressAutoSave = false;
+        }
+
         _setStatus($"Nová faktura {number}.");
     }
 
@@ -138,15 +184,16 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         }
     }
 
-    [RelayCommand]
-    private async Task SaveInvoiceAsync()
+    public Task SaveSelectedInvoiceAsync() => SaveInvoiceAsync(SelectedInvoice);
+
+    private async Task SaveInvoiceAsync(IssuedInvoiceViewModel? invoice)
     {
-        if (SelectedInvoice is null)
+        if (invoice is null)
         {
             return;
         }
 
-        var domain = SelectedInvoice.ToDomain();
+        var domain = invoice.ToDomain();
         if (string.IsNullOrWhiteSpace(domain.Number))
         {
             _setStatus("Faktura musí mít číslo.");
@@ -154,7 +201,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         }
 
         await _repository.SaveIssuedInvoiceAsync(domain);
-        SelectedInvoice.Id = domain.Id;
+        invoice.Id = domain.Id;
         _hydratedInvoiceIds.Add(domain.Id);
         _setStatus($"Uložena faktura {domain.Number}.");
     }
@@ -174,8 +221,17 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             _hydratedInvoiceIds.Remove(invoice.Id);
         }
 
-        Invoices.Remove(invoice);
-        SelectedInvoice = Invoices.FirstOrDefault();
+        _suppressAutoSave = true;
+        try
+        {
+            Invoices.Remove(invoice);
+            SelectedInvoice = Invoices.FirstOrDefault();
+        }
+        finally
+        {
+            _suppressAutoSave = false;
+        }
+
         _setStatus($"Faktura {invoice.Number} smazána.");
     }
 
@@ -188,6 +244,8 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             return;
         }
 
+        // Šablonu (zdroj) uložíme jako první, aby další číslo vyšlo čistě z DB (viz NewInvoiceAsync).
+        await SaveInvoiceAsync(SelectedInvoice);
         var source = SelectedInvoice.ToDomain();
         var number = await _repository.NextInvoiceNumberAsync(DateTime.Today.Year);
         var today = DateOnly.FromDateTime(DateTime.Today);
@@ -221,8 +279,17 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         };
 
         var viewModel = IssuedInvoiceViewModel.FromDomain(copy);
-        Invoices.Insert(0, viewModel);
-        SelectedInvoice = viewModel;
+        _suppressAutoSave = true;
+        try
+        {
+            Invoices.Insert(0, viewModel);
+            SelectedInvoice = viewModel;
+        }
+        finally
+        {
+            _suppressAutoSave = false;
+        }
+
         _setStatus($"Vytvořena faktura {number} ze šablony {source.Number}.");
     }
 
@@ -273,7 +340,6 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             return;
         }
 
-        SelectedInvoice.CustomerId = null;
         SelectedInvoice.CustomerIco = detail.Ico;
         SelectedInvoice.CustomerName = detail.OfficialName;
         SelectedInvoice.CustomerDic = detail.Dic ?? SelectedInvoice.CustomerDic;
@@ -282,6 +348,18 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         SelectedInvoice.CustomerCity = detail.City ?? "";
         SelectedInvoice.CustomerPostalCode = detail.PostalCode ?? "";
         SelectedInvoice.CustomerCountry = "Česká republika";
+
+        // Je-li odběratel navázaný na adresář, obnovíme uložený subjekt na aktuální data z ARES.
+        if (SelectedInvoice.CustomerId is long counterpartyId)
+        {
+            var linked = _counterparties.FirstOrDefault(c => c.Id == counterpartyId);
+            if (linked is not null)
+            {
+                linked.ApplyAresDetail(detail);
+                await _repository.SaveCounterpartyAsync(linked.ToDomain());
+            }
+        }
+
         _setStatus($"ARES: {detail.OfficialName}");
     }
 
@@ -293,7 +371,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             return;
         }
 
-        await SaveInvoiceAsync();
+        await SaveInvoiceAsync(SelectedInvoice);
         await _saveSupplierAsync();
         var domain = SelectedInvoice.ToDomain();
         var supplier = _getSupplier();
@@ -328,7 +406,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             return;
         }
 
-        await SaveInvoiceAsync();
+        await SaveInvoiceAsync(SelectedInvoice);
         await _saveSupplierAsync();
         var message = await _insertIntoVatAsync(SelectedInvoice.ToDomain());
         _setStatus(message);

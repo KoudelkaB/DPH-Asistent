@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using Dph.Core.Calculations;
 using Dph.Core.Domain;
 using Dph.Core.Epo;
+using Dph.Core.Invoicing;
 using Dph.Core.Persistence;
 using Dph.Core.Services;
 
@@ -397,6 +398,53 @@ public partial class MainWindowViewModel : ViewModelBase
     // a při zavření okna, aby se ručně zadané údaje neztratily, i když zrovna neproběhlo uložení faktur.
     public Task SaveTaxSubjectAsync() => _repository.SaveTaxSubjectAsync(TaxSubject);
 
+    // Účet a IBAN se do formuláře vážou přes tyto proxy vlastnosti (TaxSubject je prostý objekt bez
+    // notifikací). Zadání účtu rovnou dopočítá IBAN; ten zůstává ručně přepsatelný (zahraniční účet).
+    public string BankAccount
+    {
+        get => TaxSubject.BankAccount ?? "";
+        set
+        {
+            if ((TaxSubject.BankAccount ?? "") == value)
+            {
+                return;
+            }
+
+            TaxSubject.BankAccount = value;
+            OnPropertyChanged();
+
+            var iban = CzechIban.TryFromAccount(value);
+            if (!string.IsNullOrEmpty(iban) && iban != TaxSubject.Iban)
+            {
+                TaxSubject.Iban = iban;
+                OnPropertyChanged(nameof(Iban));
+            }
+        }
+    }
+
+    public string Iban
+    {
+        get => TaxSubject.Iban ?? "";
+        set
+        {
+            if ((TaxSubject.Iban ?? "") == value)
+            {
+                return;
+            }
+
+            TaxSubject.Iban = value;
+            OnPropertyChanged();
+        }
+    }
+
+    // TaxSubject je vyměňován jako celá reference (načtení, ARES, import) – proxy pole je pak nutné
+    // ručně přenotifikovat, jinak by po výměně ukazovala stará data.
+    partial void OnTaxSubjectChanged(TaxSubject value)
+    {
+        OnPropertyChanged(nameof(BankAccount));
+        OnPropertyChanged(nameof(Iban));
+    }
+
     // Vloží vydanou fakturu do tabulky DPH: najde/založí období podle DUZP a přidá řádek
     // InvoiceKind.IssuedDomestic za každou sazbu DPH (jeden řádek = jedna sazba).
     internal async Task<string> InsertIssuedInvoiceIntoVatAsync(IssuedInvoice invoice)
@@ -668,24 +716,44 @@ public partial class MainWindowViewModel : ViewModelBase
         SelectedCounterparty = counterparty;
     }
 
-    [RelayCommand]
-    private async Task SaveCounterpartyAsync()
+    // Adresář se ukládá automaticky (jako poplatník na 1. záložce) – při přepnutí na jiný subjekt
+    // a při zavření okna. Prázdné rozpracované koncepty (viz EnsureCounterpartyDraftSelected)
+    // se nepersistují.
+    partial void OnSelectedCounterpartyChanged(CounterpartyViewModel? oldValue, CounterpartyViewModel? newValue)
+        => _ = SaveCounterpartySafelyAsync(oldValue);
+
+    public Task SaveSelectedCounterpartyAsync() => SaveCounterpartyAsync(SelectedCounterparty);
+
+    // Volané z fire-and-forget handleru změny výběru – výjimka se nesmí ztratit ani shodit aplikaci.
+    private async Task SaveCounterpartySafelyAsync(CounterpartyViewModel? counterparty)
     {
-        if (SelectedCounterparty is null)
+        try
+        {
+            await SaveCounterpartyAsync(counterparty);
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Subjekt se nepodařilo uložit: {exception.Message}";
+        }
+    }
+
+    private async Task SaveCounterpartyAsync(CounterpartyViewModel? counterparty)
+    {
+        if (counterparty is null || IsBlankDraft(counterparty))
         {
             return;
         }
 
-        var domain = SelectedCounterparty.ToDomain();
+        var domain = counterparty.ToDomain();
         await _repository.SaveCounterpartyAsync(domain);
-        SelectedCounterparty.Id = domain.Id;
-        if (!Counterparties.Contains(SelectedCounterparty))
+        counterparty.Id = domain.Id;
+        if (!Counterparties.Contains(counterparty))
         {
-            Counterparties.Add(SelectedCounterparty);
+            Counterparties.Add(counterparty);
         }
 
-        RefreshInvoiceCounterpartyNames(SelectedCounterparty);
-        StatusMessage = $"Uloženo: {SelectedCounterparty.DisplayName}";
+        RefreshInvoiceCounterpartyNames(counterparty);
+        StatusMessage = $"Uloženo: {counterparty.DisplayName}";
     }
 
     [RelayCommand]
@@ -713,25 +781,38 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var (subject, fromCache) = await LookupAresByIcoAsync(normalizedIco);
-        if (subject is null)
+        // Detailní dotaz (ne cache), aby se doplnila i adresa – adresář ji nově drží a vydané
+        // faktury z ní vyplňují odběratele.
+        AresSubjectDetail? detail;
+        try
         {
-            if (!StatusMessage.StartsWith("ARES chyba:", StringComparison.Ordinal)
-                && StatusMessage != "ARES neodpověděl včas."
-                && StatusMessage != "ARES vrátil neočekávaná data.")
-            {
-                StatusMessage = "ARES subjekt nenašel.";
-            }
-
+            detail = await _aresClient.LookupDetailByIcoAsync(normalizedIco);
+        }
+        catch (HttpRequestException exception)
+        {
+            StatusMessage = $"ARES chyba: {exception.Message}";
+            return;
+        }
+        catch (TaskCanceledException)
+        {
+            StatusMessage = "ARES neodpověděl včas.";
+            return;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            StatusMessage = "ARES vrátil neočekávaná data.";
             return;
         }
 
-        SelectedCounterparty.Ico = subject.Ico;
-        SelectedCounterparty.Name = subject.OfficialName;
-        SelectedCounterparty.Dic = subject.Dic ?? SelectedCounterparty.Dic;
+        if (detail is null)
+        {
+            StatusMessage = "ARES subjekt nenašel.";
+            return;
+        }
 
-        await SaveCounterpartyAsync();
-        StatusMessage = fromCache ? $"ARES cache: {subject.OfficialName}" : $"ARES: {subject.OfficialName}";
+        SelectedCounterparty.ApplyAresDetail(detail);
+        await SaveCounterpartyAsync(SelectedCounterparty);
+        StatusMessage = $"ARES: {detail.OfficialName}";
     }
 
     [RelayCommand]
@@ -778,17 +859,18 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        // Doplníme jen prázdné položky, ať nepřepíšeme ručně zadané údaje poplatníka.
+        // ARES je zdroj pravdy: nalezené údaje přepíšeme. Ručně zadané hodnoty zůstanou zachované
+        // jen když subjekt v ARES není – to řeší brzký návrat výše (detail is null).
         TaxSubject.Ico = detail.Ico;
-        if (string.IsNullOrWhiteSpace(TaxSubject.Dic) && detail.Dic is not null)
+        if (detail.Dic is not null)
         {
             TaxSubject.Dic = detail.Dic;
         }
 
-        FillIfEmpty(TaxSubject.Street, detail.Street, value => TaxSubject.Street = value);
-        FillIfEmpty(TaxSubject.HouseNumber, detail.HouseNumber, value => TaxSubject.HouseNumber = value);
-        FillIfEmpty(TaxSubject.City, detail.City, value => TaxSubject.City = value);
-        FillIfEmpty(TaxSubject.PostalCode, detail.PostalCode, value => TaxSubject.PostalCode = value);
+        TaxSubject.Street = detail.Street ?? "";
+        TaxSubject.HouseNumber = detail.HouseNumber ?? "";
+        TaxSubject.City = detail.City ?? "";
+        TaxSubject.PostalCode = detail.PostalCode ?? "";
 
         // Cílový finanční úřad je v ARES autoritativní, takže ho přepíšeme i když už je vyplněný.
         if (!string.IsNullOrEmpty(detail.TaxOfficeCode))
@@ -804,14 +886,6 @@ public partial class MainWindowViewModel : ViewModelBase
         StatusMessage = detail.TaxOfficeCode is null
             ? $"ARES: {detail.OfficialName} (FÚ se nepodařilo určit, doplň ručně)"
             : $"ARES: {detail.OfficialName}, finanční úřad {detail.TaxOfficeCode}";
-    }
-
-    private static void FillIfEmpty(string? current, string? value, Action<string> set)
-    {
-        if (string.IsNullOrWhiteSpace(current) && !string.IsNullOrWhiteSpace(value))
-        {
-            set(value);
-        }
     }
 
     private static TaxSubject CloneTaxSubject(TaxSubject s) => new()
@@ -833,7 +907,9 @@ public partial class MainWindowViewModel : ViewModelBase
         TaxOfficeCode = s.TaxOfficeCode,
         WorkplaceCode = s.WorkplaceCode,
         DataBoxId = s.DataBoxId,
-        ActivityCode = s.ActivityCode
+        ActivityCode = s.ActivityCode,
+        BankAccount = s.BankAccount,
+        Iban = s.Iban
     };
 
     [RelayCommand]

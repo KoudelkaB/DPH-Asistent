@@ -39,6 +39,10 @@ public sealed class DphRepository(string databasePath)
                 ico text null,
                 dic text null,
                 country_code text not null,
+                street text null,
+                house_number text null,
+                city text null,
+                postal_code text null,
                 role text not null,
                 ares_updated_at text null
             );
@@ -131,6 +135,10 @@ public sealed class DphRepository(string databasePath)
         await EnsureColumnAsync(connection, "tax_subjects", "bank_account", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "tax_subjects", "iban", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "intro_text", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "postal_code", "text null", cancellationToken);
     }
 
     public async Task<TaxSubject?> LoadTaxSubjectAsync(CancellationToken cancellationToken = default)
@@ -218,6 +226,10 @@ public sealed class DphRepository(string databasePath)
                 Ico = NullableText(reader, "ico"),
                 Dic = NullableText(reader, "dic"),
                 CountryCode = Text(reader, "country_code"),
+                Street = NullableText(reader, "street"),
+                HouseNumber = NullableText(reader, "house_number"),
+                City = NullableText(reader, "city"),
+                PostalCode = NullableText(reader, "postal_code"),
                 Role = Enum.Parse<CounterpartyRole>(Text(reader, "role")),
                 AresUpdatedAt = ParseDateTimeOffset(NullableText(reader, "ares_updated_at"))
             });
@@ -232,12 +244,13 @@ public sealed class DphRepository(string databasePath)
         await using var command = connection.CreateCommand();
         command.CommandText = counterparty.Id == 0
             ? """
-              insert into counterparties (name, ico, dic, country_code, role, ares_updated_at)
-              values ($name, $ico, $dic, $country_code, $role, $ares_updated_at)
+              insert into counterparties (name, ico, dic, country_code, street, house_number, city, postal_code, role, ares_updated_at)
+              values ($name, $ico, $dic, $country_code, $street, $house_number, $city, $postal_code, $role, $ares_updated_at)
               returning id
               """
             : """
-              update counterparties set name=$name, ico=$ico, dic=$dic, country_code=$country_code, role=$role, ares_updated_at=$ares_updated_at
+              update counterparties set name=$name, ico=$ico, dic=$dic, country_code=$country_code,
+                  street=$street, house_number=$house_number, city=$city, postal_code=$postal_code, role=$role, ares_updated_at=$ares_updated_at
               where id=$id
               returning id
               """;
@@ -246,6 +259,10 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$ico", counterparty.Ico);
         Add(command, "$dic", counterparty.Dic);
         Add(command, "$country_code", counterparty.CountryCode);
+        Add(command, "$street", counterparty.Street);
+        Add(command, "$house_number", counterparty.HouseNumber);
+        Add(command, "$city", counterparty.City);
+        Add(command, "$postal_code", counterparty.PostalCode);
         Add(command, "$role", counterparty.Role.ToString());
         Add(command, "$ares_updated_at", counterparty.AresUpdatedAt?.ToString("O"));
         var id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? counterparty.Id);

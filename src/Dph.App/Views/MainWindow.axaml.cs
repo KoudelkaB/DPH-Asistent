@@ -274,6 +274,8 @@ public partial class MainWindow : Window
         }
 
         await viewModel.SaveTaxSubjectAsync();
+        await viewModel.SaveSelectedCounterpartyAsync();
+        await viewModel.Issuing.SaveSelectedInvoiceAsync();
         await viewModel.SaveWindowSizeAsync(Bounds.Width, Bounds.Height);
     }
 }

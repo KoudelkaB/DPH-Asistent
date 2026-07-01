@@ -95,7 +95,7 @@
 
                     <Grid Grid.Column="1" RowDefinitions="Auto,* ,Auto" RowSpacing="10">
                         <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="10">
-                            <Grid ColumnDefinitions="90,120,90,120,90,120,90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                            <Grid ColumnDefinitions="110,120,90,120,90,120,100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                                 <TextBlock Text="DIČ" VerticalAlignment="Center"/>
                                 <TextBox Grid.Column="1" Text="{Binding TaxSubject.Dic}"/>
                                 <TextBlock Grid.Column="2" Text="Jméno" VerticalAlignment="Center"/>
@@ -155,10 +155,10 @@
 
                                 <TextBlock Grid.Row="4" Text="Bankovní účet" VerticalAlignment="Center"
                                            ToolTip.Tip="Účet dodavatele pro vydané faktury ve tvaru [předčíslí-]číslo/kód banky. Z něj se počítá IBAN a QR Platba."/>
-                                <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding TaxSubject.BankAccount}"/>
+                                <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding BankAccount}"/>
                                 <TextBlock Grid.Row="4" Grid.Column="4" Text="IBAN" VerticalAlignment="Center"
-                                           ToolTip.Tip="Volitelně. Když je prázdné, IBAN se dopočítá z bankovního účtu."/>
-                                <TextBox Grid.Row="4" Grid.Column="5" Grid.ColumnSpan="3" Text="{Binding TaxSubject.Iban}"/>
+                                           ToolTip.Tip="Dopočítá se z bankovního účtu. Přepiš jen u zahraničního účtu."/>
+                                <TextBox Grid.Row="4" Grid.Column="5" Grid.ColumnSpan="3" Text="{Binding Iban}"/>
                             </Grid>
                         </Border>
 
@@ -387,7 +387,6 @@
                                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right"
                                             DataContext="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext)}"
                                             x:DataType="vm:IssuedInvoicesViewModel">
-                                    <Button Command="{Binding SaveInvoiceCommand}" Content="Uložit fakturu"/>
                                     <Button Command="{Binding InsertIntoVatCommand}" Content="Vložit do DPH"/>
                                     <Button Command="{Binding SavePdfCommand}" Content="Uložit PDF"
                                             Background="#2563EB" Foreground="White"/>
@@ -418,21 +417,30 @@
                     </Border>
 
                     <Border Grid.Column="1" Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="14">
-                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
+                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
                             <TextBlock Text="Název" VerticalAlignment="Center"/>
                             <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.Name, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Grid.Row="1" Text="IČO" VerticalAlignment="Center"/>
                             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SelectedCounterparty.Ico, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Grid.Row="2" Text="DIČ" VerticalAlignment="Center"/>
                             <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedCounterparty.Dic, UpdateSourceTrigger=PropertyChanged}"/>
-                            <TextBlock Grid.Row="3" Text="Stát / role" VerticalAlignment="Center"/>
-                            <Grid Grid.Row="3" Grid.Column="1" ColumnDefinitions="100,180,*" ColumnSpacing="8">
+                            <TextBlock Grid.Row="3" Text="Ulice / č.p." VerticalAlignment="Center"/>
+                            <Grid Grid.Row="3" Grid.Column="1" ColumnDefinitions="*,90" ColumnSpacing="8">
+                                <TextBox Text="{Binding SelectedCounterparty.Street, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.HouseNumber, UpdateSourceTrigger=PropertyChanged}"/>
+                            </Grid>
+                            <TextBlock Grid.Row="4" Text="Obec / PSČ" VerticalAlignment="Center"/>
+                            <Grid Grid.Row="4" Grid.Column="1" ColumnDefinitions="*,90" ColumnSpacing="8">
+                                <TextBox Text="{Binding SelectedCounterparty.City, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedCounterparty.PostalCode, UpdateSourceTrigger=PropertyChanged}"/>
+                            </Grid>
+                            <TextBlock Grid.Row="5" Text="Stát / role" VerticalAlignment="Center"/>
+                            <Grid Grid.Row="5" Grid.Column="1" ColumnDefinitions="100,180,*" ColumnSpacing="8">
                                 <TextBox Text="{Binding SelectedCounterparty.CountryCode}"/>
                                 <ComboBox Grid.Column="1" ItemsSource="{Binding SelectedCounterparty.RoleOptions}" SelectedItem="{Binding SelectedCounterparty.Role}"/>
                             </Grid>
-                            <Grid Grid.Row="4" Grid.Column="1" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
+                            <Grid Grid.Row="6" Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8">
                                 <Button Command="{Binding FillCounterpartyFromAresCommand}" Content="Doplnit z ARES"/>
-                                <Button Grid.Column="1" Command="{Binding SaveCounterpartyCommand}" Content="Uložit subjekt"/>
                             </Grid>
                         </Grid>
                     </Border>

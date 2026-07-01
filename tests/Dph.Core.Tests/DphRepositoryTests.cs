@@ -61,6 +61,10 @@ public sealed class DphRepositoryTests
             Name = "Alza hardware",
             Ico = cached!.Ico,
             Dic = cached.Dic,
+            Street = "Jankovcova",
+            HouseNumber = "1522/53",
+            City = "Praha",
+            PostalCode = "17000",
             Role = CounterpartyRole.Supplier
         };
 
@@ -69,6 +73,10 @@ public sealed class DphRepositoryTests
 
         Assert.Single(loaded);
         Assert.Equal("Alza hardware", loaded[0].Name);
+        Assert.Equal("Jankovcova", loaded[0].Street);
+        Assert.Equal("1522/53", loaded[0].HouseNumber);
+        Assert.Equal("Praha", loaded[0].City);
+        Assert.Equal("17000", loaded[0].PostalCode);
     }
 
     [Fact]

@@ -7,6 +7,10 @@ public sealed class Counterparty
     public string? Ico { get; set; }
     public string? Dic { get; set; }
     public string CountryCode { get; set; } = "CZ";
+    public string? Street { get; set; }
+    public string? HouseNumber { get; set; }
+    public string? City { get; set; }
+    public string? PostalCode { get; set; }
     public CounterpartyRole Role { get; set; } = CounterpartyRole.Supplier;
     public DateTimeOffset? AresUpdatedAt { get; set; }
 
