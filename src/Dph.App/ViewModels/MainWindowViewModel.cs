@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -117,7 +118,10 @@ public partial class MainWindowViewModel : ViewModelBase
             Counterparties,
             () => TaxSubject,
             SaveTaxSubjectAsync,
+            ResolveIssuedInvoiceVatPeriodState,
             InsertIssuedInvoiceIntoVatAsync,
+            SyncIssuedInvoiceWithOpenVatAsync,
+            RemoveIssuedInvoiceFromOpenVatAsync,
             message => StatusMessage = message);
         ApplyTaxOfficeCatalog(TaxOfficeDirectory.Offices, TaxOfficeDirectory.Workplaces);
         _ = LoadAsync();
@@ -329,9 +333,102 @@ public partial class MainWindowViewModel : ViewModelBase
         return placeholder;
     }
 
-    partial void OnSelectedPeriodChanged(VatPeriod? value)
+    partial void OnSelectedPeriodChanged(VatPeriod? oldValue, VatPeriod? newValue)
     {
+        if (oldValue is not null)
+        {
+            oldValue.PropertyChanged -= OnSelectedPeriodStateChanged;
+        }
+
+        if (newValue is not null)
+        {
+            newValue.PropertyChanged += OnSelectedPeriodStateChanged;
+        }
+
+        RaisePeriodEditabilityChanged();
         _ = LoadInvoicesAsync();
+    }
+
+    private IssuedInvoiceVatPeriodState ResolveIssuedInvoiceVatPeriodState(DateOnly taxableSupplyDate)
+    {
+        var period = Periods.FirstOrDefault(x => x.Year == taxableSupplyDate.Year && x.Month == taxableSupplyDate.Month);
+        if (period is null)
+        {
+            return IssuedInvoiceVatPeriodState.Missing;
+        }
+
+        return period.IsLockedByHistory && !period.HasPendingChanges
+            ? IssuedInvoiceVatPeriodState.Closed
+            : IssuedInvoiceVatPeriodState.Open;
+    }
+
+    // Chráněné (podané) období je read-only do první vědomě potvrzené změny. Jakmile má ChangedAt,
+    // je změněný stav trvalý a editace zůstává povolená i po restartu.
+    public bool IsSelectedPeriodEditable
+        => SelectedPeriod is null
+           || !SelectedPeriod.IsLockedByHistory
+           || SelectedPeriod.HasPendingChanges
+           || _confirmedProtectedPeriodIds.Contains(SelectedPeriod.Id);
+
+    public bool ShowPeriodStatusBanner => SelectedPeriod is not null && SelectedPeriod.IsLockedByHistory;
+
+    public bool ShowPeriodUnlockButton
+        => SelectedPeriod is { IsLockedByHistory: true, HasPendingChanges: false }
+           && !_confirmedProtectedPeriodIds.Contains(SelectedPeriod.Id);
+
+    public string SelectedPeriodStatusText
+    {
+        get
+        {
+            if (SelectedPeriod is null)
+            {
+                return "";
+            }
+
+            return SelectedPeriod.Id != 0
+                   && _confirmedProtectedPeriodIds.Contains(SelectedPeriod.Id)
+                   && !SelectedPeriod.HasPendingChanges
+                ? "Období je odemčené k úpravě. Po uložení změn bude označené jako změněné."
+                : SelectedPeriod.LockReason;
+        }
+    }
+
+    private void OnSelectedPeriodStateChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(VatPeriod.IsLockedByHistory) or nameof(VatPeriod.HasPendingChanges))
+        {
+            RaisePeriodEditabilityChanged();
+        }
+    }
+
+    private void RaisePeriodEditabilityChanged()
+    {
+        OnPropertyChanged(nameof(IsSelectedPeriodEditable));
+        OnPropertyChanged(nameof(ShowPeriodStatusBanner));
+        OnPropertyChanged(nameof(ShowPeriodUnlockButton));
+        OnPropertyChanged(nameof(SelectedPeriodStatusText));
+    }
+
+    [RelayCommand]
+    private async Task UnlockPeriodAsync()
+    {
+        var period = SelectedPeriod;
+        if (period is null || !period.IsLockedByHistory || period.HasPendingChanges || _confirmedProtectedPeriodIds.Contains(period.Id))
+        {
+            return;
+        }
+
+        var confirmed = await ConfirmAsync(
+            "Odemknout období k úpravě",
+            $"{period.LockReason} Opravdu ho chceš upravit?");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _confirmedProtectedPeriodIds.Add(period.Id);
+        RaisePeriodEditabilityChanged();
+        StatusMessage = $"Období {period.Label} odemčeno k úpravě.";
     }
 
     partial void OnSelectedPeriodChanging(VatPeriod? value)
@@ -387,7 +484,7 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    // Uloží poplatníka (včetně bankovního účtu/IBAN). Volá se před generováním PDF / vložením do DPH
+    // Uloží poplatníka (včetně bankovního účtu/IBAN). Volá se před generováním PDF / aktualizací přiznání DPH
     // a při zavření okna, aby se ručně zadané údaje neztratily, i když zrovna neproběhlo uložení faktur.
     public Task SaveTaxSubjectAsync() => _repository.SaveTaxSubjectAsync(TaxSubject);
 
@@ -438,21 +535,39 @@ public partial class MainWindowViewModel : ViewModelBase
         OnPropertyChanged(nameof(Iban));
     }
 
-    // Vloží vydanou fakturu do tabulky DPH: najde/založí období podle DUZP a přidá řádek
-    // InvoiceKind.IssuedDomestic za každou sazbu DPH (jeden řádek = jedna sazba).
-    internal async Task<string> InsertIssuedInvoiceIntoVatAsync(IssuedInvoice invoice)
+    // Vloží nebo aktualizuje vydanou fakturu v tabulce DPH. Nové období tady záměrně nevzniká,
+    // aby akce nebyla skryté "založ období a vlož".
+    internal async Task<IssuedInvoiceVatUpdateResult> InsertIssuedInvoiceIntoVatAsync(IssuedInvoice invoice)
     {
-        var period = await EnsurePeriodForAsync(invoice.TaxableSupplyDate);
+        var period = Periods.FirstOrDefault(x => x.Year == invoice.TaxableSupplyDate.Year && x.Month == invoice.TaxableSupplyDate.Month);
+        if (period is null)
+        {
+            return new(false, $"Přiznání DPH pro DUZP faktury {invoice.Number} ještě neexistuje. Faktura se do něj vloží automaticky při založení období.");
+        }
+
         var oldPeriodIds = invoice.Id == 0
             ? new List<long>()
             : await _repository.LoadPeriodIdsForIssuedInvoiceAsync(invoice.Id);
+        var isInsert = oldPeriodIds.Count == 0;
+
+        // Potvrzení chceme i pro dotčená období, která právě nejsou v paměti – jinak by se chráněné
+        // (podané) období změnilo bez dotazu. Kolekci z DB načteme jen když v paměti něco chybí.
+        List<VatPeriod>? reloadedPeriods = null;
         foreach (var periodId in oldPeriodIds.Append(period.Id).Distinct())
         {
             var affectedPeriod = Periods.FirstOrDefault(x => x.Id == periodId);
-            if (affectedPeriod is not null
-                && !await ConfirmProtectedPeriodChangeAsync(affectedPeriod, "vložit vydanou fakturu do DPH"))
+            if (affectedPeriod is null)
             {
-                return "Vložení do DPH zrušeno.";
+                reloadedPeriods ??= await _repository.LoadPeriodsAsync();
+                affectedPeriod = reloadedPeriods.FirstOrDefault(x => x.Id == periodId);
+            }
+
+            if (affectedPeriod is not null
+                && !await ConfirmProtectedPeriodChangeAsync(affectedPeriod, isInsert
+                       ? "vložit vydanou fakturu do přiznání DPH"
+                       : "aktualizovat vydanou fakturu v přiznání DPH"))
+            {
+                return new(false, isInsert ? "Vložení do přiznání DPH zrušeno." : "Aktualizace v přiznání DPH zrušena.");
             }
         }
 
@@ -462,22 +577,159 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         var inserted = await InsertIssuedInvoiceLinesAsync(invoice, period);
+        if (inserted == 0)
+        {
+            foreach (var oldPeriodId in oldPeriodIds)
+            {
+                await MarkPeriodChangedAsync(oldPeriodId);
+            }
+
+            await ReloadSelectedInvoicesIfAffectedAsync(oldPeriodIds);
+            return oldPeriodIds.Count > 0
+                ? new(true, $"Faktura {invoice.Number} nemá žádné nenulové položky a byla z přiznání DPH vyjmuta.", IssuedInvoiceVatSyncOutcome.Removed)
+                : new(false, $"Faktura {invoice.Number} zatím nemá žádné nenulové položky pro vložení do přiznání DPH.");
+        }
 
         foreach (var oldPeriodId in oldPeriodIds.Where(id => id != period.Id))
         {
             await MarkPeriodChangedAsync(oldPeriodId);
         }
 
+        await MarkPeriodChangedAsync(period.Id);
         if (SelectedPeriod?.Id == period.Id)
         {
             await LoadInvoicesAsync();
         }
-        else
+
+        return new(true, isInsert
+            ? $"Faktura {invoice.Number} vložena do přiznání DPH {period.Label} ({inserted} řádků)."
+            : $"Faktura {invoice.Number} aktualizována v přiznání DPH {period.Label} ({inserted} řádků).");
+    }
+
+    internal async Task<IssuedInvoiceVatUpdateResult> SyncIssuedInvoiceWithOpenVatAsync(IssuedInvoice invoice)
+    {
+        if (invoice.Id == 0)
+        {
+            return new(false, "");
+        }
+
+        var period = Periods.FirstOrDefault(x => x.Year == invoice.TaxableSupplyDate.Year && x.Month == invoice.TaxableSupplyDate.Month);
+        var oldPeriodIds = await _repository.LoadPeriodIdsForIssuedInvoiceAsync(invoice.Id);
+        if (period is null && oldPeriodIds.Count == 0)
+        {
+            return new(false, "");
+        }
+
+        var affectedPeriods = await LoadAffectedPeriodsAsync(oldPeriodIds, period);
+        if (affectedPeriods.Any(IsClosedForAutomaticVatSync))
+        {
+            return new(false, "");
+        }
+
+        if (oldPeriodIds.Count > 0)
+        {
+            await _repository.DeleteInvoiceLinesForIssuedInvoiceAsync(invoice.Id);
+        }
+
+        foreach (var oldPeriod in affectedPeriods.Where(x => oldPeriodIds.Contains(x.Id) && x.Id != period?.Id))
+        {
+            await MarkPeriodChangedAsync(oldPeriod.Id);
+        }
+
+        if (period is null)
+        {
+            await ReloadSelectedInvoicesIfAffectedAsync(oldPeriodIds);
+            return new(true, "Faktura byla automaticky vyjmuta z otevřeného přiznání DPH.", IssuedInvoiceVatSyncOutcome.Removed);
+        }
+
+        var inserted = await InsertIssuedInvoiceLinesAsync(invoice, period);
+        if (inserted == 0)
+        {
+            foreach (var oldPeriod in affectedPeriods.Where(x => oldPeriodIds.Contains(x.Id)))
+            {
+                await MarkPeriodChangedAsync(oldPeriod.Id);
+            }
+
+            await ReloadSelectedInvoicesIfAffectedAsync(oldPeriodIds);
+            return oldPeriodIds.Count > 0
+                ? new(true, "Faktura nemá žádné nenulové položky a byla automaticky vyjmuta z otevřeného přiznání DPH.", IssuedInvoiceVatSyncOutcome.Removed)
+                : new(false, "Faktura zatím nemá žádné nenulové položky pro automatické vložení do otevřeného přiznání DPH.");
+        }
+
+        await MarkPeriodChangedAsync(period.Id);
+        await ReloadSelectedInvoicesIfAffectedAsync(oldPeriodIds.Append(period.Id));
+
+        return new(
+            true,
+            oldPeriodIds.Count == 0
+                ? $"Faktura byla automaticky vložena do otevřeného přiznání DPH {period.Label} ({inserted} řádků)."
+                : $"Faktura byla automaticky aktualizována v otevřeném přiznání DPH {period.Label} ({inserted} řádků).");
+    }
+
+    internal async Task<IssuedInvoiceVatUpdateResult> RemoveIssuedInvoiceFromOpenVatAsync(IssuedInvoice invoice)
+    {
+        if (invoice.Id == 0)
+        {
+            return new(false, "");
+        }
+
+        var oldPeriodIds = await _repository.LoadPeriodIdsForIssuedInvoiceAsync(invoice.Id);
+        if (oldPeriodIds.Count == 0)
+        {
+            return new(false, "");
+        }
+
+        var affectedPeriods = await LoadAffectedPeriodsAsync(oldPeriodIds, targetPeriod: null);
+        foreach (var period in affectedPeriods)
+        {
+            if (!await ConfirmProtectedPeriodChangeAsync(period, "vyjmout smazanou vydanou fakturu z přiznání DPH"))
+            {
+                return new(false, "Smazání faktury zrušeno, protože by změnilo uzavřené přiznání DPH.");
+            }
+        }
+
+        await _repository.DeleteInvoiceLinesForIssuedInvoiceAsync(invoice.Id);
+        foreach (var period in affectedPeriods)
         {
             await MarkPeriodChangedAsync(period.Id);
         }
 
-        return $"Faktura {invoice.Number} vložena do DPH období {period.Label} ({inserted} řádků).";
+        await ReloadSelectedInvoicesIfAffectedAsync(oldPeriodIds);
+        return new(true, "Faktura byla vyjmuta z přiznání DPH.", IssuedInvoiceVatSyncOutcome.Removed);
+    }
+
+    private async Task<List<VatPeriod>> LoadAffectedPeriodsAsync(IEnumerable<long> oldPeriodIds, VatPeriod? targetPeriod)
+    {
+        var periodIds = oldPeriodIds.Append(targetPeriod?.Id ?? 0).Where(id => id != 0).Distinct().ToArray();
+        List<VatPeriod>? reloadedPeriods = null;
+        var periods = new List<VatPeriod>();
+        foreach (var periodId in periodIds)
+        {
+            var period = Periods.FirstOrDefault(x => x.Id == periodId);
+            if (period is null)
+            {
+                reloadedPeriods ??= await _repository.LoadPeriodsAsync();
+                period = reloadedPeriods.FirstOrDefault(x => x.Id == periodId);
+            }
+
+            if (period is not null)
+            {
+                periods.Add(period);
+            }
+        }
+
+        return periods;
+    }
+
+    private static bool IsClosedForAutomaticVatSync(VatPeriod period)
+        => period.IsLockedByHistory && !period.HasPendingChanges;
+
+    private async Task ReloadSelectedInvoicesIfAffectedAsync(IEnumerable<long> affectedPeriodIds)
+    {
+        if (SelectedPeriod is not null && affectedPeriodIds.Contains(SelectedPeriod.Id))
+        {
+            await LoadInvoicesAsync();
+        }
     }
 
     // Najde období pro daný měsíc/rok, případně ho založí.
@@ -608,12 +860,20 @@ public partial class MainWindowViewModel : ViewModelBase
         var copied = sourcePeriod is null ? 0 : await CopyTemplateInvoicesAsync(sourcePeriod.Id, period, skipIssued: hasIssued);
 
         var insertedFromIssued = 0;
+        var insertedAt = DateTimeOffset.UtcNow;
         foreach (var issued in issuedInvoices)
         {
-            insertedFromIssued += await InsertIssuedInvoiceLinesAsync(issued, period);
+            var insertedFromInvoice = await InsertIssuedInvoiceLinesAsync(issued, period);
+            insertedFromIssued += insertedFromInvoice;
+            if (insertedFromInvoice > 0)
+            {
+                await _repository.MarkIssuedInvoiceVatInsertedAsync(issued.Id, insertedAt);
+                Issuing.MarkInvoiceVatInserted(issued.Id, insertedAt);
+            }
         }
 
         await LoadInvoicesAsync();
+        Issuing.RefreshVatPeriodStates();
         StatusMessage = BuildAddPeriodStatus(period, sourcePeriod, copied, issuedInvoices.Count, insertedFromIssued);
     }
 
@@ -663,6 +923,7 @@ public partial class MainWindowViewModel : ViewModelBase
             UpdateSummary();
         }
 
+        Issuing.RefreshVatPeriodStates();
         StatusMessage = $"Období {period.Label} smazáno.";
     }
 
@@ -1348,6 +1609,8 @@ public partial class MainWindowViewModel : ViewModelBase
         SelectedPeriod.ExportedAt = exportedAt;
         SelectedPeriod.ChangedAt = null; // export odráží aktuální stav – odznak „změna“ mizí
         _confirmedProtectedPeriodIds.Remove(SelectedPeriod.Id); // po podání ať se případná další úprava znovu potvrdí
+        RaisePeriodEditabilityChanged(); // období se znovu zamklo → obnovit read-only stav gridu
+        Issuing.RefreshVatPeriodStates();
         var kindLabel = corrective ? "Opravné" : "Řádné";
         StatusMessage = $"{kindLabel} přiznání: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
 
@@ -1449,6 +1712,7 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         SelectedPeriod = Periods.FirstOrDefault();
+        Issuing.RefreshVatPeriodStates();
         StatusMessage = $"Import hotový. Subjektů: {imported.Counterparties.Count}, období: {imported.Periods.Count}, řádků: {importedInvoiceCount}, přeskočeno: {imported.SkippedFiles.Count}.";
     }
 
@@ -1461,6 +1725,7 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         SelectedPeriod = Periods.FirstOrDefault(x => x.Id == selectedPeriodId) ?? Periods.FirstOrDefault();
+        Issuing.RefreshVatPeriodStates();
     }
 
     // Úprava už podaného období: necháme import/export příznak a jen označíme „změna“. Děláme to
@@ -1481,6 +1746,12 @@ public partial class MainWindowViewModel : ViewModelBase
         var changedAt = DateTimeOffset.UtcNow;
         await _repository.MarkPeriodChangedAsync(periodId.Value, changedAt);
         period.ChangedAt = changedAt; // VatPeriod hlásí změnu Labelu, takže se odznak v seznamu obnoví sám
+        if (SelectedPeriod?.Id == period.Id)
+        {
+            RaisePeriodEditabilityChanged();
+        }
+
+        Issuing.RefreshVatPeriodStates();
     }
 
     private async Task LoadInvoicesAsync()
@@ -1723,7 +1994,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private Task<bool> ConfirmProtectedPeriodChangeAsync(VatPeriod period, string action)
     {
-        if (!period.IsLockedByHistory)
+        if (!period.IsLockedByHistory || period.HasPendingChanges)
         {
             return Task.FromResult(true);
         }

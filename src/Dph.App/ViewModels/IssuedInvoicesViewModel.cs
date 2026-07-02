@@ -19,11 +19,13 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
     private readonly ObservableCollection<CounterpartyViewModel> _counterparties;
     private readonly Func<TaxSubject> _getSupplier;
     private readonly Func<Task> _saveSupplierAsync;
-    private readonly Func<IssuedInvoice, Task<string>> _insertIntoVatAsync;
+    private readonly Func<DateOnly, IssuedInvoiceVatPeriodState> _getVatPeriodState;
+    private readonly Func<IssuedInvoice, Task<IssuedInvoiceVatUpdateResult>> _updateVatAsync;
+    private readonly Func<IssuedInvoice, Task<IssuedInvoiceVatUpdateResult>> _syncOpenVatAsync;
+    private readonly Func<IssuedInvoice, Task<IssuedInvoiceVatUpdateResult>> _removeFromOpenVatAsync;
     private readonly Action<string> _setStatus;
     private readonly InvoicePdfRenderer _pdfRenderer = new();
     private readonly Dictionary<long, Task> _invoiceHydrationTasks = [];
-    private readonly HashSet<long> _confirmedProtectedInvoiceIds = [];
 
     // Potlačí automatické uložení "opouštěné" faktury při programové změně výběru (mazání),
     // kde by se právě smazaná faktura okamžitě uložila zpět.
@@ -49,7 +51,10 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         ObservableCollection<CounterpartyViewModel> counterparties,
         Func<TaxSubject> getSupplier,
         Func<Task> saveSupplierAsync,
-        Func<IssuedInvoice, Task<string>> insertIntoVatAsync,
+        Func<DateOnly, IssuedInvoiceVatPeriodState> getVatPeriodState,
+        Func<IssuedInvoice, Task<IssuedInvoiceVatUpdateResult>> updateVatAsync,
+        Func<IssuedInvoice, Task<IssuedInvoiceVatUpdateResult>> syncOpenVatAsync,
+        Func<IssuedInvoice, Task<IssuedInvoiceVatUpdateResult>> removeFromOpenVatAsync,
         Action<string> setStatus)
     {
         _repository = repository;
@@ -57,7 +62,10 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         _counterparties = counterparties;
         _getSupplier = getSupplier;
         _saveSupplierAsync = saveSupplierAsync;
-        _insertIntoVatAsync = insertIntoVatAsync;
+        _getVatPeriodState = getVatPeriodState;
+        _updateVatAsync = updateVatAsync;
+        _syncOpenVatAsync = syncOpenVatAsync;
+        _removeFromOpenVatAsync = removeFromOpenVatAsync;
         _setStatus = setStatus;
     }
 
@@ -68,12 +76,17 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         try
         {
             SelectedInvoice = null;
+            foreach (var invoice in Invoices)
+            {
+                invoice.PropertyChanged -= OnInvoicePropertyChanged;
+            }
+
             Invoices.Clear();
             _invoiceHydrationTasks.Clear();
-            _confirmedProtectedInvoiceIds.Clear();
+            // Jen hlavičky; položky se dotáhnou líně při výběru faktury (EnsureInvoiceHydratedAsync).
             foreach (var invoice in await _repository.LoadIssuedInvoicesAsync())
             {
-                Invoices.Add(IssuedInvoiceViewModel.FromDomain(invoice));
+                AddInvoiceViewModel(IssuedInvoiceViewModel.FromDomain(invoice, itemsLoaded: false));
             }
 
             SelectedInvoice = Invoices.FirstOrDefault();
@@ -82,10 +95,89 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         {
             _suppressAutoSave = false;
         }
+
+        _ = BackfillMissingTotalsAsync();
+    }
+
+    public void RefreshVatPeriodStates()
+    {
+        foreach (var invoice in Invoices)
+        {
+            UpdateVatPeriodState(invoice);
+        }
+    }
+
+    public void MarkInvoiceVatInserted(long invoiceId, DateTimeOffset insertedAt)
+    {
+        var invoice = Invoices.FirstOrDefault(x => x.Id == invoiceId);
+        if (invoice is null)
+        {
+            return;
+        }
+
+        invoice.VatInsertedAt = insertedAt;
+        invoice.VatChangedAt = null;
+        invoice.IsUnlocked = false;
+        UpdateVatPeriodState(invoice);
+    }
+
+    private void AddInvoiceViewModel(IssuedInvoiceViewModel invoice)
+    {
+        invoice.PropertyChanged += OnInvoicePropertyChanged;
+        UpdateVatPeriodState(invoice);
+        Invoices.Add(invoice);
+    }
+
+    private void InsertInvoiceViewModel(int index, IssuedInvoiceViewModel invoice)
+    {
+        invoice.PropertyChanged += OnInvoicePropertyChanged;
+        UpdateVatPeriodState(invoice);
+        Invoices.Insert(index, invoice);
+    }
+
+    private void OnInvoicePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(IssuedInvoiceViewModel.TaxableSupplyDate)
+            && sender is IssuedInvoiceViewModel invoice)
+        {
+            UpdateVatPeriodState(invoice);
+        }
+    }
+
+    private void UpdateVatPeriodState(IssuedInvoiceViewModel invoice)
+    {
+        invoice.VatPeriodState = DateOnly.TryParse(invoice.TaxableSupplyDate, out var date)
+            ? _getVatPeriodState(date)
+            : IssuedInvoiceVatPeriodState.Missing;
+    }
+
+    // Staré faktury (uložené před zavedením denormalizovaných souhrnů) nemají uložený souhrn a v
+    // seznamu by ukazovaly nuly. Jednorázově je dopočítáme z položek a uložíme; příště se načtou
+    // rovnou z hlavičky. Běží na pozadí, aby se seznam zobrazil hned.
+    private async Task BackfillMissingTotalsAsync()
+    {
+        foreach (var invoice in Invoices.Where(x => x.Id != 0 && !x.HasCachedTotals).ToList())
+        {
+            try
+            {
+                var full = await _repository.LoadIssuedInvoiceAsync(invoice.Id);
+                if (full is null)
+                {
+                    continue;
+                }
+
+                await _repository.UpdateIssuedInvoiceTotalsAsync(full.Id, full.TotalBaseCzk, full.TotalVatCzk);
+                invoice.SetCachedTotals(full.TotalBaseCzk, full.TotalVatCzk);
+            }
+            catch (Exception exception)
+            {
+                _setStatus($"Souhrn faktury {invoice.Number} se nepodařilo dopočítat: {exception.Message}");
+            }
+        }
     }
 
     // Faktura se ukládá automaticky při přepnutí na jinou a při zavření okna – "Uložit fakturu"
-    // tak není potřeba (tlačítka "Vložit do DPH" a "Uložit PDF" ukládají také). Přepnutí výběru
+    // tak není potřeba (tlačítka "Aktualizovat v přiznání DPH" a "Uložit PDF" ukládají také). Přepnutí výběru
     // při mazání faktury se přeskočí, jinak by se smazaná faktura hned zase vložila zpět.
     async partial void OnSelectedInvoiceChanged(IssuedInvoiceViewModel? oldValue, IssuedInvoiceViewModel? newValue)
     {
@@ -95,7 +187,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             // zachytíme a jen zobrazíme ve stavovém řádku.
             try
             {
-                await SaveInvoiceAsync(oldValue, discardProtectedChangesOnCancel: true);
+                await SaveInvoiceAsync(oldValue);
             }
             catch (Exception exception)
             {
@@ -142,7 +234,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         // Rozpracovanou fakturu uložíme jako první – číslo nové pak vychází čistě z DB a nemůže
         // kolidovat (UNIQUE constraint na issued_invoices.number). Uložení už proběhlo, takže
         // automatické uložení "opouštěné" faktury při přepnutí výběru tady potlačíme.
-        if (!await SaveInvoiceAsync(SelectedInvoice, discardProtectedChangesOnCancel: true))
+        if (!await SaveInvoiceAsync(SelectedInvoice, autoSyncOpenVat: false))
         {
             return;
         }
@@ -158,7 +250,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         _suppressAutoSave = true;
         try
         {
-            Invoices.Insert(0, invoice);
+            InsertInvoiceViewModel(0, invoice);
             SelectedInvoice = invoice;
         }
         finally
@@ -191,11 +283,30 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         }
     }
 
-    public Task<bool> SaveSelectedInvoiceAsync() => SaveInvoiceAsync(SelectedInvoice, discardProtectedChangesOnCancel: true);
+    // Chráněnou (uzamčenou) fakturu jde upravovat až po vědomém odemčení – potvrzení tak přijde
+    // předem, ne až při ukládání. Detail je do té doby read-only (viz IssuedInvoiceViewModel.IsEditable).
+    [RelayCommand]
+    private async Task UnlockInvoiceAsync()
+    {
+        var invoice = SelectedInvoice;
+        if (invoice is null || !invoice.IsLockedByHistory || invoice.IsUnlocked)
+        {
+            return;
+        }
 
-    private async Task<bool> SaveInvoiceAsync(
-        IssuedInvoiceViewModel? invoice,
-        bool discardProtectedChangesOnCancel = false)
+        var confirmed = await ConfirmAsync(
+            "Odemknout vydanou fakturu",
+            $"{invoice.LockReason} Opravdu ji chceš upravit?");
+        if (confirmed)
+        {
+            invoice.IsUnlocked = true;
+            _setStatus($"Faktura {invoice.Number} odemčena k úpravě.");
+        }
+    }
+
+    public Task<bool> SaveSelectedInvoiceAsync() => SaveInvoiceAsync(SelectedInvoice);
+
+    private async Task<bool> SaveInvoiceAsync(IssuedInvoiceViewModel? invoice, bool autoSyncOpenVat = true)
     {
         if (invoice is null)
         {
@@ -213,20 +324,21 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         var changed = await HasInvoiceChangedAsync(domain);
         if (!changed)
         {
-            return true;
-        }
-
-        if (!await ConfirmProtectedInvoiceChangeAsync(invoice, "uložit změny"))
-        {
-            if (discardProtectedChangesOnCancel)
+            if (autoSyncOpenVat && ShouldAutoSyncOpenVat(invoice))
             {
-                await DiscardInvoiceChangesAsync(invoice);
-                _setStatus($"Změny faktury {invoice.Number} zrušeny.");
-                return true;
+                var syncResult = await _syncOpenVatAsync(invoice.ToDomain());
+                if (syncResult.Updated)
+                {
+                    await ApplyVatSyncResultAsync(invoice, syncResult);
+                }
+
+                if (!string.IsNullOrWhiteSpace(syncResult.Message))
+                {
+                    _setStatus($"Faktura {domain.Number} je beze změn. {syncResult.Message}");
+                }
             }
 
-            _setStatus("Změna zrušena.");
-            return false;
+            return true;
         }
 
         await _repository.SaveIssuedInvoiceAsync(domain);
@@ -236,11 +348,60 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         {
             var changedAt = DateTimeOffset.UtcNow;
             await _repository.MarkIssuedInvoiceChangedAsync(invoice.Id, changedAt);
-            invoice.ChangedAt = changedAt;
+            if (invoice.PdfExportedAt is not null)
+            {
+                invoice.PdfChangedAt = changedAt;
+            }
+
+            if (invoice.VatInsertedAt is not null)
+            {
+                invoice.VatChangedAt = changedAt;
+            }
         }
 
-        _setStatus($"Uložena faktura {domain.Number}.");
+        var status = $"Uložena faktura {domain.Number}.";
+        if (autoSyncOpenVat)
+        {
+            var syncResult = await _syncOpenVatAsync(invoice.ToDomain());
+            if (syncResult.Updated)
+            {
+                await ApplyVatSyncResultAsync(invoice, syncResult);
+            }
+
+            if (!string.IsNullOrWhiteSpace(syncResult.Message))
+            {
+                status = $"{status} {syncResult.Message}";
+            }
+        }
+
+        _setStatus(status);
         return true;
+    }
+
+    private static bool ShouldAutoSyncOpenVat(IssuedInvoiceViewModel invoice)
+        => invoice.VatPeriodState == IssuedInvoiceVatPeriodState.Open
+           && (invoice.VatInsertedAt is null || invoice.HasVatPendingChanges);
+
+    private async Task ApplyVatSyncResultAsync(IssuedInvoiceViewModel invoice, IssuedInvoiceVatUpdateResult result)
+    {
+        switch (result.Outcome)
+        {
+            case IssuedInvoiceVatSyncOutcome.InsertedOrUpdated:
+                var insertedAt = DateTimeOffset.UtcNow;
+                await _repository.MarkIssuedInvoiceVatInsertedAsync(invoice.Id, insertedAt);
+                invoice.VatInsertedAt = insertedAt;
+                invoice.VatChangedAt = null;
+                invoice.IsUnlocked = false;
+                break;
+            case IssuedInvoiceVatSyncOutcome.Removed:
+                await _repository.ClearIssuedInvoiceVatInsertedAsync(invoice.Id);
+                invoice.VatInsertedAt = null;
+                invoice.VatChangedAt = null;
+                invoice.IsUnlocked = false;
+                break;
+        }
+
+        UpdateVatPeriodState(invoice);
     }
 
     // Seznam vydaných faktur drží jen hlavičky; před uložením nebo použitím jako šablony musí být
@@ -285,56 +446,6 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         invoice.ItemsLoaded = true;
     }
 
-    private async Task DiscardInvoiceChangesAsync(IssuedInvoiceViewModel invoice)
-    {
-        if (invoice.Id == 0)
-        {
-            return;
-        }
-
-        var saved = await _repository.LoadIssuedInvoiceAsync(invoice.Id);
-        if (saved is null)
-        {
-            return;
-        }
-
-        ApplyDomainToViewModel(invoice, saved);
-    }
-
-    private static void ApplyDomainToViewModel(IssuedInvoiceViewModel viewModel, IssuedInvoice invoice)
-    {
-        viewModel.Id = invoice.Id;
-        viewModel.Number = invoice.Number;
-        viewModel.IssueDate = invoice.IssueDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        viewModel.TaxableSupplyDate = invoice.TaxableSupplyDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        viewModel.DueDate = invoice.DueDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        viewModel.CustomerId = invoice.CustomerId;
-        viewModel.CustomerName = invoice.CustomerName;
-        viewModel.CustomerIco = invoice.CustomerIco ?? "";
-        viewModel.CustomerDic = invoice.CustomerDic ?? "";
-        viewModel.CustomerStreet = invoice.CustomerStreet ?? "";
-        viewModel.CustomerHouseNumber = invoice.CustomerHouseNumber ?? "";
-        viewModel.CustomerCity = invoice.CustomerCity ?? "";
-        viewModel.CustomerPostalCode = invoice.CustomerPostalCode ?? "";
-        viewModel.CustomerCountry = invoice.CustomerCountry;
-        viewModel.Currency = invoice.Currency;
-        viewModel.VariableSymbol = invoice.VariableSymbol ?? "";
-        viewModel.PaymentMethod = invoice.PaymentMethod ?? "";
-        viewModel.IntroText = invoice.IntroText ?? "";
-        viewModel.Note = invoice.Note ?? "";
-        viewModel.Footer = invoice.Footer ?? "";
-        viewModel.PdfExportedAt = invoice.PdfExportedAt;
-        viewModel.VatInsertedAt = invoice.VatInsertedAt;
-        viewModel.ChangedAt = invoice.ChangedAt;
-        viewModel.Items.Clear();
-        foreach (var item in invoice.Items)
-        {
-            viewModel.Items.Add(IssuedInvoiceItemViewModel.FromDomain(item));
-        }
-
-        viewModel.ItemsLoaded = true;
-    }
-
     private async Task<bool> HasInvoiceChangedAsync(IssuedInvoice current)
     {
         if (current.Id == 0)
@@ -344,35 +455,6 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
 
         var saved = await _repository.LoadIssuedInvoiceAsync(current.Id);
         return saved is null || !InvoiceContentEquals(saved, current);
-    }
-
-    private async Task<bool> ConfirmProtectedInvoiceChangeAsync(IssuedInvoiceViewModel invoice, string action)
-    {
-        if (invoice.Id == 0 || !invoice.IsLockedByHistory || _confirmedProtectedInvoiceIds.Contains(invoice.Id))
-        {
-            return true;
-        }
-
-        var states = new List<string>();
-        if (invoice.PdfExportedAt is not null)
-        {
-            states.Add("uložená do PDF");
-        }
-
-        if (invoice.VatInsertedAt is not null)
-        {
-            states.Add("vložená do přiznání DPH");
-        }
-
-        var confirmed = await ConfirmAsync(
-            "Potvrdit změnu vydané faktury",
-            $"Faktura {invoice.Number} už je {string.Join(" a ", states)}. Opravdu chceš {action}?");
-        if (confirmed)
-        {
-            _confirmedProtectedInvoiceIds.Add(invoice.Id);
-        }
-
-        return confirmed;
     }
 
     private static bool InvoiceContentEquals(IssuedInvoice left, IssuedInvoice right)
@@ -435,9 +517,21 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         }
 
         var invoice = SelectedInvoice;
-        if (!await ConfirmProtectedInvoiceChangeAsync(invoice, "smazat fakturu"))
+        // Smazání celé faktury je jednorázová akce s vlastním potvrzením – nevyžaduje odemčení,
+        // ale u uzamčené faktury se ptáme (odpovídá chování mazání celého období).
+        if (invoice.IsLockedByHistory
+            && !await ConfirmAsync("Smazat vydanou fakturu", $"{invoice.LockReason} Opravdu ji chceš smazat?"))
         {
             _setStatus("Smazání zrušeno.");
+            return;
+        }
+
+        var vatRemoval = invoice.Id == 0
+            ? new IssuedInvoiceVatUpdateResult(false, "")
+            : await _removeFromOpenVatAsync(invoice.ToDomain());
+        if (!vatRemoval.Updated && !string.IsNullOrWhiteSpace(vatRemoval.Message))
+        {
+            _setStatus(vatRemoval.Message);
             return;
         }
 
@@ -446,6 +540,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             await _repository.DeleteIssuedInvoiceAsync(invoice.Id);
         }
 
+        invoice.PropertyChanged -= OnInvoicePropertyChanged;
         _suppressAutoSave = true;
         try
         {
@@ -457,7 +552,9 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             _suppressAutoSave = false;
         }
 
-        _setStatus($"Faktura {invoice.Number} smazána.");
+        _setStatus(vatRemoval.Updated
+            ? $"Faktura {invoice.Number} smazána. {vatRemoval.Message}"
+            : $"Faktura {invoice.Number} smazána.");
     }
 
     // Z vybrané faktury udělá novou (šablonu): zkopíruje odběratele a položky, přidělí nové číslo.
@@ -470,7 +567,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         }
 
         // Šablonu (zdroj) uložíme jako první, aby další číslo vyšlo čistě z DB (viz NewInvoiceAsync).
-        if (!await SaveInvoiceAsync(SelectedInvoice, discardProtectedChangesOnCancel: true))
+        if (!await SaveInvoiceAsync(SelectedInvoice, autoSyncOpenVat: false))
         {
             return;
         }
@@ -514,7 +611,7 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         _suppressAutoSave = true;
         try
         {
-            Invoices.Insert(0, viewModel);
+            InsertInvoiceViewModel(0, viewModel);
             SelectedInvoice = viewModel;
         }
         finally
@@ -633,16 +730,22 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         var exportedAt = DateTimeOffset.UtcNow;
         await _repository.MarkIssuedInvoicePdfExportedAsync(SelectedInvoice.Id, exportedAt);
         SelectedInvoice.PdfExportedAt = exportedAt;
-        SelectedInvoice.ChangedAt = null;
-        _confirmedProtectedInvoiceIds.Remove(SelectedInvoice.Id);
+        SelectedInvoice.PdfChangedAt = null;
+        SelectedInvoice.IsUnlocked = false; // po exportu se faktura zase zamkne
         _setStatus($"PDF uloženo: {target}");
     }
 
     [RelayCommand]
-    private async Task InsertIntoVatAsync()
+    private async Task UpdateVatAsync()
     {
         if (SelectedInvoice is null)
         {
+            return;
+        }
+
+        if (!SelectedInvoice.ShowVatActionButton)
+        {
+            _setStatus("Přiznání DPH není potřeba měnit.");
             return;
         }
 
@@ -651,13 +754,15 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             return;
         }
         await _saveSupplierAsync();
-        var message = await _insertIntoVatAsync(SelectedInvoice.ToDomain());
-        var insertedAt = DateTimeOffset.UtcNow;
-        await _repository.MarkIssuedInvoiceVatInsertedAsync(SelectedInvoice.Id, insertedAt);
-        SelectedInvoice.VatInsertedAt = insertedAt;
-        SelectedInvoice.ChangedAt = null;
-        _confirmedProtectedInvoiceIds.Remove(SelectedInvoice.Id);
-        _setStatus(message);
+        var result = await _updateVatAsync(SelectedInvoice.ToDomain());
+        if (!result.Updated)
+        {
+            _setStatus(result.Message);
+            return;
+        }
+
+        await ApplyVatSyncResultAsync(SelectedInvoice, result);
+        _setStatus(result.Message);
     }
 
     // Název PDF = "číslo – dodavatel – odběratel.pdf", očištěný od znaků nepovolených v cestě.
@@ -682,4 +787,16 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
 
         return string.IsNullOrWhiteSpace(personName) ? null : personName.Trim();
     }
+}
+
+public sealed record IssuedInvoiceVatUpdateResult(
+    bool Updated,
+    string Message,
+    IssuedInvoiceVatSyncOutcome Outcome = IssuedInvoiceVatSyncOutcome.InsertedOrUpdated);
+
+public enum IssuedInvoiceVatSyncOutcome
+{
+    None,
+    InsertedOrUpdated,
+    Removed
 }

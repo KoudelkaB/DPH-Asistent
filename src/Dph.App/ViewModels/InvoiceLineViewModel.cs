@@ -32,14 +32,11 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private long id;
     [ObservableProperty] private long periodId;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEditorEnabled))]
-    private long? issuedInvoiceId;
+    [ObservableProperty] private long? issuedInvoiceId;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowPartialDeduction))]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
-    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEditorEnabled))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     private string kind = "Přijatá";
 
@@ -54,7 +51,6 @@ public partial class InvoiceLineViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
-    [NotifyPropertyChangedFor(nameof(IsPartialDeductionEditorEnabled))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     private string grossCzk = "0";
 
@@ -67,8 +63,6 @@ public partial class InvoiceLineViewModel : ViewModelBase
     // Povolený jen nad limitem KH; pod limitem necháváme uloženou hodnotu, ale needitovatelnou.
     public bool IsPartialDeductionEnabled
         => ShowPartialDeduction && ParseDecimal(GrossCzk) > PartialDeductionLimitCzk;
-
-    public bool IsPartialDeductionEditorEnabled => IsPartialDeductionEnabled;
 
     public string PartialDeductionTooltip => IsPartialDeductionEnabled
         ? "Krácený / poměrný odpočet – v kontrolním hlášení nastaví pomer=A."

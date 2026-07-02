@@ -118,7 +118,10 @@ public sealed class DphRepository(string databasePath)
                 footer text null,
                 pdf_exported_at text null,
                 vat_inserted_at text null,
-                changed_at text null,
+                pdf_changed_at text null,
+                vat_changed_at text null,
+                total_base_czk text null,
+                total_vat_czk text null,
                 created_at text not null
             );
             create table if not exists issued_invoice_items (
@@ -142,7 +145,10 @@ public sealed class DphRepository(string databasePath)
         await EnsureColumnAsync(connection, "issued_invoices", "intro_text", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "pdf_exported_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "vat_inserted_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "changed_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "pdf_changed_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "vat_changed_at", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "total_base_czk", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "issued_invoices", "total_vat_czk", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
@@ -537,21 +543,20 @@ public sealed class DphRepository(string databasePath)
             : null;
     }
 
+    // Jen hlavičky (bez položek) – seznam faktur zobrazuje souhrny z denormalizovaných sloupců
+    // total_base_czk/total_vat_czk. Položky se dotahují líně přes LoadIssuedInvoiceAsync.
     public async Task<List<IssuedInvoice>> LoadIssuedInvoicesAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken);
         var items = new List<IssuedInvoice>();
-        await using (var command = connection.CreateCommand())
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select * from issued_invoices order by number desc";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
         {
-            command.CommandText = "select * from issued_invoices order by number desc";
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                items.Add(ReadIssuedInvoice(reader));
-            }
+            items.Add(ReadIssuedInvoice(reader));
         }
 
-        await LoadIssuedInvoiceItemsAsync(connection, items, cancellationToken);
         return items;
     }
 
@@ -639,8 +644,8 @@ public sealed class DphRepository(string databasePath)
             command.Transaction = (SqliteTransaction)transaction;
             command.CommandText = invoice.Id == 0
                 ? """
-                  insert into issued_invoices (number, issue_date, taxable_supply_date, due_date, customer_id, customer_name, customer_ico, customer_dic, customer_street, customer_house_number, customer_city, customer_postal_code, customer_country, currency, variable_symbol, payment_method, intro_text, note, footer, pdf_exported_at, vat_inserted_at, changed_at, created_at)
-                  values ($number, $issue_date, $taxable_supply_date, $due_date, $customer_id, $customer_name, $customer_ico, $customer_dic, $customer_street, $customer_house_number, $customer_city, $customer_postal_code, $customer_country, $currency, $variable_symbol, $payment_method, $intro_text, $note, $footer, $pdf_exported_at, $vat_inserted_at, $changed_at, $created_at)
+                  insert into issued_invoices (number, issue_date, taxable_supply_date, due_date, customer_id, customer_name, customer_ico, customer_dic, customer_street, customer_house_number, customer_city, customer_postal_code, customer_country, currency, variable_symbol, payment_method, intro_text, note, footer, pdf_exported_at, vat_inserted_at, pdf_changed_at, vat_changed_at, total_base_czk, total_vat_czk, created_at)
+                  values ($number, $issue_date, $taxable_supply_date, $due_date, $customer_id, $customer_name, $customer_ico, $customer_dic, $customer_street, $customer_house_number, $customer_city, $customer_postal_code, $customer_country, $currency, $variable_symbol, $payment_method, $intro_text, $note, $footer, $pdf_exported_at, $vat_inserted_at, $pdf_changed_at, $vat_changed_at, $total_base_czk, $total_vat_czk, $created_at)
                   returning id
                   """
                 : """
@@ -649,7 +654,9 @@ public sealed class DphRepository(string databasePath)
                       customer_street=$customer_street, customer_house_number=$customer_house_number, customer_city=$customer_city,
                       customer_postal_code=$customer_postal_code, customer_country=$customer_country, currency=$currency,
                       variable_symbol=$variable_symbol, payment_method=$payment_method, intro_text=$intro_text, note=$note, footer=$footer,
-                      pdf_exported_at=$pdf_exported_at, vat_inserted_at=$vat_inserted_at, changed_at=$changed_at
+                      pdf_exported_at=$pdf_exported_at, vat_inserted_at=$vat_inserted_at,
+                      pdf_changed_at=$pdf_changed_at, vat_changed_at=$vat_changed_at,
+                      total_base_czk=$total_base_czk, total_vat_czk=$total_vat_czk
                   where id=$id
                   returning id
                   """;
@@ -675,7 +682,10 @@ public sealed class DphRepository(string databasePath)
             Add(command, "$footer", invoice.Footer);
             Add(command, "$pdf_exported_at", invoice.PdfExportedAt?.ToString("O"));
             Add(command, "$vat_inserted_at", invoice.VatInsertedAt?.ToString("O"));
-            Add(command, "$changed_at", invoice.ChangedAt?.ToString("O"));
+            Add(command, "$pdf_changed_at", invoice.PdfChangedAt?.ToString("O"));
+            Add(command, "$vat_changed_at", invoice.VatChangedAt?.ToString("O"));
+            Add(command, "$total_base_czk", invoice.TotalBaseCzk.ToString(CultureInfo.InvariantCulture));
+            Add(command, "$total_vat_czk", invoice.TotalVatCzk.ToString(CultureInfo.InvariantCulture));
             Add(command, "$created_at", DateTimeOffset.UtcNow.ToString("O"));
             invoice.Id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? invoice.Id);
         }
@@ -716,7 +726,12 @@ public sealed class DphRepository(string databasePath)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "update issued_invoices set pdf_exported_at=$exported_at, changed_at=null where id=$id";
+        command.CommandText = """
+            update issued_invoices
+            set pdf_exported_at=$exported_at,
+                pdf_changed_at=null
+            where id=$id
+            """;
         Add(command, "$id", id);
         Add(command, "$exported_at", exportedAt.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -726,9 +741,28 @@ public sealed class DphRepository(string databasePath)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "update issued_invoices set vat_inserted_at=$inserted_at, changed_at=null where id=$id";
+        command.CommandText = """
+            update issued_invoices
+            set vat_inserted_at=$inserted_at,
+                vat_changed_at=null
+            where id=$id
+            """;
         Add(command, "$id", id);
         Add(command, "$inserted_at", insertedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ClearIssuedInvoiceVatInsertedAsync(long id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            update issued_invoices
+            set vat_inserted_at=null,
+                vat_changed_at=null
+            where id=$id
+            """;
+        Add(command, "$id", id);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -736,9 +770,27 @@ public sealed class DphRepository(string databasePath)
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "update issued_invoices set changed_at=$changed_at where id=$id";
+        command.CommandText = """
+            update issued_invoices
+            set pdf_changed_at=case when pdf_exported_at is not null then $updated_at else pdf_changed_at end,
+                vat_changed_at=case when vat_inserted_at is not null then $updated_at else vat_changed_at end
+            where id=$id
+            """;
         Add(command, "$id", id);
-        Add(command, "$changed_at", changedAt.ToString("O"));
+        Add(command, "$updated_at", changedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    // Doplní denormalizované souhrny u starých záznamů (uložených před zavedením sloupců), aniž by
+    // se dotýkalo stavu faktury.
+    public async Task UpdateIssuedInvoiceTotalsAsync(long id, decimal totalBaseCzk, decimal totalVatCzk, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update issued_invoices set total_base_czk=$total_base_czk, total_vat_czk=$total_vat_czk where id=$id";
+        Add(command, "$id", id);
+        Add(command, "$total_base_czk", totalBaseCzk.ToString(CultureInfo.InvariantCulture));
+        Add(command, "$total_vat_czk", totalVatCzk.ToString(CultureInfo.InvariantCulture));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -789,32 +841,43 @@ public sealed class DphRepository(string databasePath)
         return $"{prefix}{maxSequence + 1:D4}";
     }
 
-    private static IssuedInvoice ReadIssuedInvoice(SqliteDataReader reader) => new()
+    private static IssuedInvoice ReadIssuedInvoice(SqliteDataReader reader)
     {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        Number = Text(reader, "number"),
-        IssueDate = DateOnly.Parse(Text(reader, "issue_date"), CultureInfo.InvariantCulture),
-        TaxableSupplyDate = DateOnly.Parse(Text(reader, "taxable_supply_date"), CultureInfo.InvariantCulture),
-        DueDate = DateOnly.Parse(Text(reader, "due_date"), CultureInfo.InvariantCulture),
-        CustomerId = NullableLong(reader, "customer_id"),
-        CustomerName = Text(reader, "customer_name"),
-        CustomerIco = NullableText(reader, "customer_ico"),
-        CustomerDic = NullableText(reader, "customer_dic"),
-        CustomerStreet = NullableText(reader, "customer_street"),
-        CustomerHouseNumber = NullableText(reader, "customer_house_number"),
-        CustomerCity = NullableText(reader, "customer_city"),
-        CustomerPostalCode = NullableText(reader, "customer_postal_code"),
-        CustomerCountry = Text(reader, "customer_country"),
-        Currency = Text(reader, "currency"),
-        VariableSymbol = NullableText(reader, "variable_symbol"),
-        PaymentMethod = NullableText(reader, "payment_method"),
-        IntroText = NullableText(reader, "intro_text"),
-        Note = NullableText(reader, "note"),
-        Footer = NullableText(reader, "footer"),
-        PdfExportedAt = ParseDateTimeOffset(NullableText(reader, "pdf_exported_at")),
-        VatInsertedAt = ParseDateTimeOffset(NullableText(reader, "vat_inserted_at")),
-        ChangedAt = ParseDateTimeOffset(NullableText(reader, "changed_at"))
-    };
+        var pdfExportedAt = ParseDateTimeOffset(NullableText(reader, "pdf_exported_at"));
+        var vatInsertedAt = ParseDateTimeOffset(NullableText(reader, "vat_inserted_at"));
+        var pdfChangedAt = ParseDateTimeOffset(NullableText(reader, "pdf_changed_at"));
+        var vatChangedAt = ParseDateTimeOffset(NullableText(reader, "vat_changed_at"));
+
+        return new IssuedInvoice
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            Number = Text(reader, "number"),
+            IssueDate = DateOnly.Parse(Text(reader, "issue_date"), CultureInfo.InvariantCulture),
+            TaxableSupplyDate = DateOnly.Parse(Text(reader, "taxable_supply_date"), CultureInfo.InvariantCulture),
+            DueDate = DateOnly.Parse(Text(reader, "due_date"), CultureInfo.InvariantCulture),
+            CustomerId = NullableLong(reader, "customer_id"),
+            CustomerName = Text(reader, "customer_name"),
+            CustomerIco = NullableText(reader, "customer_ico"),
+            CustomerDic = NullableText(reader, "customer_dic"),
+            CustomerStreet = NullableText(reader, "customer_street"),
+            CustomerHouseNumber = NullableText(reader, "customer_house_number"),
+            CustomerCity = NullableText(reader, "customer_city"),
+            CustomerPostalCode = NullableText(reader, "customer_postal_code"),
+            CustomerCountry = Text(reader, "customer_country"),
+            Currency = Text(reader, "currency"),
+            VariableSymbol = NullableText(reader, "variable_symbol"),
+            PaymentMethod = NullableText(reader, "payment_method"),
+            IntroText = NullableText(reader, "intro_text"),
+            Note = NullableText(reader, "note"),
+            Footer = NullableText(reader, "footer"),
+            PdfExportedAt = pdfExportedAt,
+            VatInsertedAt = vatInsertedAt,
+            PdfChangedAt = pdfChangedAt,
+            VatChangedAt = vatChangedAt,
+            StoredTotalBaseCzk = NullableDecimal(reader, "total_base_czk"),
+            StoredTotalVatCzk = NullableDecimal(reader, "total_vat_czk")
+        };
+    }
 
     public async Task<AresSubject?> LoadAresCacheAsync(string ico, CancellationToken cancellationToken = default)
     {

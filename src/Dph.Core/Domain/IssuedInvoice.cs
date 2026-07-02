@@ -40,12 +40,21 @@ public sealed class IssuedInvoice
     // Další změna/smazání se potvrzuje a změna se značí podobně jako u podaného období.
     public DateTimeOffset? PdfExportedAt { get; set; }
     public DateTimeOffset? VatInsertedAt { get; set; }
-    public DateTimeOffset? ChangedAt { get; set; }
+    public DateTimeOffset? PdfChangedAt { get; set; }
+    public DateTimeOffset? VatChangedAt { get; set; }
 
     public bool IsLockedByHistory => PdfExportedAt is not null || VatInsertedAt is not null;
-    public bool HasPendingChanges => ChangedAt is not null;
+    public bool HasPdfPendingChanges => PdfChangedAt is not null;
+    public bool HasVatPendingChanges => VatChangedAt is not null;
+    public bool HasPendingChanges => HasPdfPendingChanges || HasVatPendingChanges;
 
     public List<IssuedInvoiceItem> Items { get; set; } = [];
+
+    // Souhrny se denormalizovaně ukládají do hlavičky, aby je seznam faktur mohl zobrazit bez
+    // načtení položek (ty se dotahují líně až při otevření faktury). Zapisují se při uložení,
+    // čtou se i u hlaviček. Null = starý záznam bez uloženého souhrnu (dopočítá se z položek).
+    public decimal? StoredTotalBaseCzk { get; set; }
+    public decimal? StoredTotalVatCzk { get; set; }
 
     public decimal TotalBaseCzk => VatCalculator.Money(Items.Sum(x => x.LineBaseCzk));
     public decimal TotalVatCzk => VatCalculator.Money(Items.Sum(x => x.LineVatCzk));

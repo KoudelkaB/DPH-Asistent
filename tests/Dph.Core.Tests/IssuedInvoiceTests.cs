@@ -174,9 +174,11 @@ public sealed class IssuedInvoiceTests
         Assert.Equal(1000.5m, item.UnitPriceCzk);
         Assert.Equal(VatRateKind.Standard21, item.VatRate);
 
+        // Seznam vrací jen hlavičky (bez položek); souhrn se čte z denormalizovaných sloupců.
         var listItem = Assert.Single(await repository.LoadIssuedInvoicesAsync());
-        Assert.Single(listItem.Items);
-        Assert.Equal(3001.5m, listItem.TotalBaseCzk);
+        Assert.Empty(listItem.Items);
+        Assert.Equal(3001.5m, listItem.StoredTotalBaseCzk);
+        Assert.Equal(630.32m, listItem.StoredTotalVatCzk);
 
         // Editace = smaž a vlož položky; nesmí zůstat duplicity.
         loaded.Items.Add(new IssuedInvoiceItem { Description = "Doprava", Quantity = 1, UnitPriceCzk = 200, VatRate = VatRateKind.Standard21 });
@@ -192,10 +194,47 @@ public sealed class IssuedInvoiceTests
         Assert.True(protectedInvoice.HasPendingChanges);
         Assert.NotNull(protectedInvoice.PdfExportedAt);
         Assert.NotNull(protectedInvoice.VatInsertedAt);
-        Assert.NotNull(protectedInvoice.ChangedAt);
+        Assert.NotNull(protectedInvoice.PdfChangedAt);
+        Assert.NotNull(protectedInvoice.VatChangedAt);
+        Assert.True(protectedInvoice.HasPdfPendingChanges);
+        Assert.True(protectedInvoice.HasVatPendingChanges);
 
         await repository.DeleteIssuedInvoiceAsync(invoice.Id);
         Assert.Null(await repository.LoadIssuedInvoiceAsync(invoice.Id));
+    }
+
+    [Fact]
+    public async Task Repository_Tracks_Pdf_And_Vat_Pending_Changes_Separately()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        var invoice = new IssuedInvoice
+        {
+            Number = "20260001",
+            CustomerName = "Test",
+            Items = { new IssuedInvoiceItem { Description = "x", Quantity = 1, UnitPriceCzk = 100, VatRate = VatRateKind.Standard21 } }
+        };
+        await repository.SaveIssuedInvoiceAsync(invoice);
+
+        await repository.MarkIssuedInvoicePdfExportedAsync(invoice.Id, new DateTimeOffset(2026, 7, 1, 10, 0, 0, TimeSpan.Zero));
+        await repository.MarkIssuedInvoiceVatInsertedAsync(invoice.Id, new DateTimeOffset(2026, 7, 2, 10, 0, 0, TimeSpan.Zero));
+        await repository.MarkIssuedInvoiceChangedAsync(invoice.Id, new DateTimeOffset(2026, 7, 3, 10, 0, 0, TimeSpan.Zero));
+
+        await repository.MarkIssuedInvoiceVatInsertedAsync(invoice.Id, new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero));
+        var afterVatUpdate = await repository.LoadIssuedInvoiceAsync(invoice.Id);
+        Assert.True(afterVatUpdate!.HasPendingChanges);
+        Assert.True(afterVatUpdate.HasPdfPendingChanges);
+        Assert.False(afterVatUpdate.HasVatPendingChanges);
+
+        await repository.MarkIssuedInvoicePdfExportedAsync(invoice.Id, new DateTimeOffset(2026, 7, 5, 10, 0, 0, TimeSpan.Zero));
+        var afterPdfUpdate = await repository.LoadIssuedInvoiceAsync(invoice.Id);
+        Assert.False(afterPdfUpdate!.HasPendingChanges);
+        Assert.False(afterPdfUpdate.HasPdfPendingChanges);
+        Assert.False(afterPdfUpdate.HasVatPendingChanges);
+        Assert.Null(afterPdfUpdate.PdfChangedAt);
+        Assert.Null(afterPdfUpdate.VatChangedAt);
     }
 
     [Fact]

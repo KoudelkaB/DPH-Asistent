@@ -63,6 +63,31 @@ public sealed class VatPeriod : INotifyPropertyChanged
 
     public bool HasPendingChanges => ChangedAt is not null;
 
+    // Lidsky čitelný stav pro banner v přiznání.
+    public string LockReason
+    {
+        get
+        {
+            if (ChangedAt is not null)
+            {
+                return "Po exportu nebo importu bylo přiznání změněno.";
+            }
+
+            var flags = new List<string>();
+            if (ImportedAt is not null)
+            {
+                flags.Add("importované");
+            }
+
+            if (ExportedAt is not null)
+            {
+                flags.Add("podané (exportované)");
+            }
+
+            return flags.Count == 0 ? "" : $"Období je uzamčené – {string.Join(" a ", flags)}.";
+        }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void RaiseStateChanged()
@@ -70,5 +95,6 @@ public sealed class VatPeriod : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Label)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsLockedByHistory)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasPendingChanges)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LockReason)));
     }
 }
