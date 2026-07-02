@@ -332,7 +332,7 @@
                                 <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="4" Padding="10">
                                     <Grid ColumnDefinitions="90,160,Auto,Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                                         <TextBlock Text="Odběratel" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                                        <TextBox Grid.Column="1" Text="{Binding CustomerIco}" Watermark="IČO"/>
+                                        <TextBox Grid.Column="1" Text="{Binding CustomerIco}" PlaceholderText="IČO"/>
                                         <Button Grid.Column="2"
                                                 Command="{Binding #issuedInvoicesRoot.((vm:IssuedInvoicesViewModel)DataContext).FillCustomerFromAresCommand}"
                                                 Content="Načíst z ARES"/>
