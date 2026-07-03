@@ -13,7 +13,8 @@ public sealed class EpoTaxFormDefinition
     public string SoftwareVersion { get; init; } = "0.1.0";
 
     // Reverse charge v této aplikaci = přijetí služby ze zahraničí: dodavatel z EU (§9 odst.1) →
-    // ř.5/6, ze třetí země (§108) → ř.12/13; odpočet ř.43/44. Není to tuzemský přenos §92a a do KH nepatří.
+    // ř.5/6, ze třetí země (§108) → ř.12/13; odpočet ř.43/44. Není to tuzemský přenos §92a (KH B1);
+    // v kontrolním hlášení se vykazuje v oddílu A.2.
     public string ReverseChargeNotice { get; init; } =
-        "Reverse charge = přijetí služby ze zahraničí: EU dodavatel → ř.5/6, třetí země → ř.12/13, odpočet ř.43/44; nepatří do kontrolního hlášení.";
+        "Reverse charge = přijetí služby ze zahraničí: EU dodavatel → ř.5/6, třetí země → ř.12/13, odpočet ř.43/44; v kontrolním hlášení oddíl A.2.";
 }

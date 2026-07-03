@@ -57,4 +57,64 @@ public sealed class EpoXmlImporterTests
         Assert.Equal(VatRateKind.Standard21, invoices.Single(x => x.EvidenceNumber == "STD").VatRate);
         Assert.Equal(VatRateKind.Reduced12, invoices.Single(x => x.EvidenceNumber == "RED").VatRate);
     }
+
+    [Fact]
+    public void Imports_Second_Rate_Columns_As_Separate_Reduced_Rate_Lines()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Pisemnost>
+              <DPHKH1 verzePis="03.01">
+                <VetaD d_poddp="20.06.2026" dokument="KH1" k_uladis="DPH" khdph_forma="B" mesic="5" rok="2026"/>
+                <VetaB2 c_evid_dd="MIX" dan1="2100" dan2="600" dic_dod="27082440" dppd="12.05.2026" pomer="A" zakl_dane1="10000" zakl_dane2="5000" />
+              </DPHKH1>
+            </Pisemnost>
+            """);
+
+        var imported = new ImportedEpoData();
+        new EpoXmlImporter().ImportFile(path, imported);
+
+        var invoices = Assert.Single(imported.Periods).Invoices;
+        Assert.Equal(2, invoices.Count);
+        var standard = invoices.Single(x => x.VatRate == VatRateKind.Standard21);
+        Assert.Equal(10_000m, standard.TaxBaseCzk);
+        Assert.Equal(2_100m, standard.VatCzk);
+        Assert.True(standard.PartialDeduction);
+        var reduced = invoices.Single(x => x.VatRate == VatRateKind.Reduced12);
+        Assert.Equal(5_000m, reduced.TaxBaseCzk);
+        Assert.Equal(600m, reduced.VatCzk);
+    }
+
+    [Fact]
+    public void Imports_Section_A2_As_Reverse_Charge_Lines()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Pisemnost>
+              <DPHKH1 verzePis="03.01">
+                <VetaD d_poddp="20.06.2026" dokument="KH1" k_uladis="DPH" khdph_forma="B" mesic="5" rok="2026"/>
+                <VetaA2 c_evid_dd="OPENAI-IE" c_radku="1" dan1="87" dppd="25.05.2026" k_stat="IE" vatid_dod="4143435AH" zakl_dane1="412.4"/>
+                <VetaA2 c_evid_dd="ANTHROPIC" c_radku="2" dan1="95" dppd="11.05.2026" zakl_dane1="450"/>
+              </DPHKH1>
+            </Pisemnost>
+            """);
+
+        var imported = new ImportedEpoData();
+        new EpoXmlImporter().ImportFile(path, imported);
+
+        var invoices = Assert.Single(imported.Periods).Invoices;
+        Assert.Equal(2, invoices.Count);
+        Assert.All(invoices, x => Assert.Equal(InvoiceKind.ReverseCharge, x.Kind));
+        var eu = invoices.Single(x => x.EvidenceNumber == "OPENAI-IE");
+        Assert.Equal("IE4143435AH", eu.CounterpartyDic);
+        Assert.Equal(412.4m, eu.TaxBaseCzk);
+        var thirdCountry = invoices.Single(x => x.EvidenceNumber == "ANTHROPIC");
+        Assert.Null(thirdCountry.CounterpartyDic);
+
+        // EU dodavatel se založí do adresáře; třetí země bez VAT ID ne.
+        Assert.Equal("IE", imported.Counterparties["IE4143435AH"].CountryCode);
+        Assert.Single(imported.Counterparties);
+    }
 }

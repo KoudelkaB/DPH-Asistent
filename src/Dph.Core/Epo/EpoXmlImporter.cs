@@ -81,6 +81,27 @@ public sealed class EpoXmlImporter
                 Role = CounterpartyRole.Supplier
             });
         }
+
+        // Zahraniční dodavatelé z A.2 (reverse charge) – jen ti s EU VAT ID; třetí země nemá
+        // v KH žádnou identifikaci.
+        foreach (var element in document.Descendants("VetaA2"))
+        {
+            var state = Attr(element, "k_stat");
+            var vatId = Attr(element, "vatid_dod");
+            if (state.Length == 0 || vatId.Length == 0)
+            {
+                continue;
+            }
+
+            var dic = $"{state}{vatId}";
+            result.Counterparties.TryAdd(dic, new Counterparty
+            {
+                Dic = dic,
+                Name = dic,
+                CountryCode = state.ToUpperInvariant(),
+                Role = CounterpartyRole.Supplier
+            });
+        }
     }
 
     private static string Attr(XElement element, string name) => element.Attribute(name)?.Value?.Trim() ?? "";
@@ -118,64 +139,99 @@ public sealed class EpoXmlImporter
 
     private static void ImportControlStatementInvoices(XDocument document, ImportedPeriod period)
     {
+        // A.2 – přijatá plnění s daní příjemce (reverse charge, ř. 3–6, 9, 12, 13 přiznání).
+        foreach (var element in document.Descendants("VetaA2"))
+        {
+            var vatId = $"{Attr(element, "k_stat")}{Attr(element, "vatid_dod")}".Trim();
+            AddRateLines(element, period, () => new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                CounterpartyDic = EmptyToNull(vatId),
+                CounterpartyName = vatId.Length > 0 ? vatId : "Zahraniční dodavatel",
+                EvidenceNumber = Attr(element, "c_evid_dd"),
+                TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period)
+            });
+        }
+
         foreach (var element in document.Descendants("VetaA4"))
         {
-            period.Invoices.Add(new InvoiceLine
+            AddRateLines(element, period, () => new InvoiceLine
             {
                 Kind = InvoiceKind.IssuedDomestic,
                 CounterpartyDic = NormalizeCzechDic(Attr(element, "dic_odb")),
                 CounterpartyName = NormalizeCzechDic(Attr(element, "dic_odb")),
                 EvidenceNumber = Attr(element, "c_evid_dd"),
-                TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period),
-                TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1")),
-                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1"))),
-                PartialDeduction = string.Equals(Attr(element, "pomer"), "A", StringComparison.OrdinalIgnoreCase)
+                TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period)
             });
         }
 
         foreach (var element in document.Descendants("VetaA5"))
         {
-            period.Invoices.Add(new InvoiceLine
+            AddRateLines(element, period, () => new InvoiceLine
             {
                 Kind = InvoiceKind.IssuedDomestic,
                 CounterpartyName = "Souhrn malých vydaných dokladů",
                 EvidenceNumber = "A5",
-                TaxableSupplyDate = LastDay(period.Period),
-                TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1")),
-                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1")))
+                TaxableSupplyDate = LastDay(period.Period)
             });
         }
 
         foreach (var element in document.Descendants("VetaB2"))
         {
-            period.Invoices.Add(new InvoiceLine
+            AddRateLines(element, period, () => new InvoiceLine
             {
                 Kind = InvoiceKind.ReceivedDomesticWithVat,
                 CounterpartyDic = NormalizeCzechDic(Attr(element, "dic_dod")),
                 CounterpartyName = NormalizeCzechDic(Attr(element, "dic_dod")),
                 EvidenceNumber = Attr(element, "c_evid_dd"),
                 TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period),
-                TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1")),
-                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1")))
+                PartialDeduction = string.Equals(Attr(element, "pomer"), "A", StringComparison.OrdinalIgnoreCase)
             });
         }
 
         foreach (var element in document.Descendants("VetaB3"))
         {
-            period.Invoices.Add(new InvoiceLine
+            AddRateLines(element, period, () => new InvoiceLine
             {
                 Kind = InvoiceKind.ReceivedDomesticWithVat,
                 CounterpartyName = "Souhrn malých přijatých dokladů",
                 EvidenceNumber = "B3",
-                TaxableSupplyDate = LastDay(period.Period),
-                TaxBaseCzk = ParseMoney(Attr(element, "zakl_dane1")),
-                VatCzk = ParseMoney(Attr(element, "dan1")),
-                VatRate = InferVatRate(ParseMoney(Attr(element, "zakl_dane1")), ParseMoney(Attr(element, "dan1")))
+                TaxableSupplyDate = LastDay(period.Period)
             });
         }
+    }
+
+    // KH vede základ+daň ve sloupcích podle sazby (1 = základní, 2/3 = snížené). Za každý neprázdný
+    // sloupec vznikne jeden řádek tabulky, stejně jako je exportér zpátky slučuje do jednoho dokladu.
+    private static void AddRateLines(XElement element, ImportedPeriod period, Func<InvoiceLine> create)
+    {
+        AddRateLine(element, period, create, "zakl_dane1", "dan1", inferredRate: null);
+        AddRateLine(element, period, create, "zakl_dane2", "dan2", VatRateKind.Reduced12);
+        AddRateLine(element, period, create, "zakl_dane3", "dan3", VatRateKind.Reduced12);
+    }
+
+    private static void AddRateLine(
+        XElement element,
+        ImportedPeriod period,
+        Func<InvoiceLine> create,
+        string baseAttr,
+        string vatAttr,
+        VatRateKind? inferredRate)
+    {
+        var baseCzk = ParseMoney(Attr(element, baseAttr));
+        var vatCzk = ParseMoney(Attr(element, vatAttr));
+        if (baseCzk == 0 && vatCzk == 0)
+        {
+            return;
+        }
+
+        var line = create();
+        line.TaxBaseCzk = baseCzk;
+        line.VatCzk = vatCzk;
+        // Sloupec 1 je podle pokynů základní sazba, ale starší exporty této aplikace do něj psaly
+        // i sníženou – proto se sazba dopočítá z poměru daně a základu.
+        line.VatRate = inferredRate ?? InferVatRate(baseCzk, vatCzk);
+        period.Invoices.Add(line);
     }
 
     // KH carries only base + VAT amounts, not the rate. Recover it from the ratio so later edits

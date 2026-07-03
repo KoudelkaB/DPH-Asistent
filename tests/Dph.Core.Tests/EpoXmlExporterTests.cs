@@ -64,7 +64,7 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
-    public void Foreign_Service_Reverse_Charge_Maps_To_Rows_12_13_And_43_44_And_Stays_Out_Of_Kh()
+    public void Foreign_Service_Reverse_Charge_Maps_To_Rows_12_13_And_43_44_And_Kh_Section_A2()
     {
         var exporter = new EpoXmlExporter();
         var subject = Subject();
@@ -89,12 +89,128 @@ public sealed class EpoXmlExporterTests
         Assert.Equal("450", veta4.Attribute("nar_zdp23")?.Value);  // ř.43 základ
         Assert.Equal("95", veta4.Attribute("od_zdp23")?.Value);    // ř.43 odpočet
         Assert.Equal("95", veta4.Attribute("odp_sum_nar")?.Value); // ř.46 součet
-        // Nesmí skončit na neplatném ř.10/11 (Veta2) ani v kontrolním hlášení.
+        // Nesmí skončit na neplatném ř.10/11 (Veta2).
         Assert.Empty(dph.Descendants("Veta2"));
 
+        // V KH patří do oddílu A.2 (ne B.1/B.2); třetí země bez EU DIČ má prázdnou identifikaci.
         var kh = exporter.ExportControlStatement(subject, period, invoices);
+        var vetaA2 = kh.Descendants("VetaA2").Single();
+        Assert.Equal("", vetaA2.Attribute("k_stat")?.Value);
+        Assert.Equal("", vetaA2.Attribute("vatid_dod")?.Value);
+        Assert.Equal("OJWGTKQQ-0001", vetaA2.Attribute("c_evid_dd")?.Value);
+        Assert.Equal("450", vetaA2.Attribute("zakl_dane1")?.Value);
+        Assert.Equal("94.5", vetaA2.Attribute("dan1")?.Value);
+        Assert.Equal("450", kh.Descendants("VetaC").Single().Attribute("celk_zd_a2")?.Value);
         Assert.Empty(kh.Descendants("VetaB1"));
         Assert.Empty(kh.Descendants("VetaB2"));
+    }
+
+    [Fact]
+    public void Eu_Supplier_Reverse_Charge_Splits_Vat_Id_In_Kh_Section_A2()
+    {
+        var exporter = new EpoXmlExporter();
+        var kh = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 5 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge,
+                EvidenceNumber = "OPENAI-IE",
+                CounterpartyDic = "IE4143435AH",
+                TaxableSupplyDate = new DateOnly(2026, 5, 25),
+                TaxBaseCzk = 412.40m,
+                VatCzk = 86.60m
+            }
+        });
+
+        var vetaA2 = kh.Descendants("VetaA2").Single();
+        Assert.Equal("IE", vetaA2.Attribute("k_stat")?.Value);
+        Assert.Equal("4143435AH", vetaA2.Attribute("vatid_dod")?.Value);
+        Assert.Equal("412.4", vetaA2.Attribute("zakl_dane1")?.Value);
+        Assert.Equal("86.6", vetaA2.Attribute("dan1")?.Value);
+    }
+
+    [Fact]
+    public void Reduced_Rate_Supplies_Use_Second_Rate_Columns_In_Kh()
+    {
+        var exporter = new EpoXmlExporter();
+        var kh = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260007",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 6, 30),
+                TaxBaseCzk = 20_000m,
+                VatCzk = 2_400m,
+                VatRate = VatRateKind.Reduced12
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReceivedDomesticWithVat,
+                EvidenceNumber = "FV-12",
+                CounterpartyDic = "CZ27082440",
+                TaxableSupplyDate = new DateOnly(2026, 6, 12),
+                TaxBaseCzk = 1_000m,
+                VatCzk = 120m,
+                VatRate = VatRateKind.Reduced12
+            }
+        });
+
+        var vetaA4 = kh.Descendants("VetaA4").Single();
+        Assert.Null(vetaA4.Attribute("zakl_dane1"));
+        Assert.Equal("20000", vetaA4.Attribute("zakl_dane2")?.Value);
+        Assert.Equal("2400", vetaA4.Attribute("dan2")?.Value);
+
+        var vetaB3 = kh.Descendants("VetaB3").Single();
+        Assert.Null(vetaB3.Attribute("zakl_dane1"));
+        Assert.Equal("1000", vetaB3.Attribute("zakl_dane2")?.Value);
+        Assert.Equal("120", vetaB3.Attribute("dan2")?.Value);
+
+        // Kontrolní součty musí sedět na ř.2/ř.41 přiznání (snížená sazba), ne na ř.1/ř.40.
+        var vetaC = kh.Descendants("VetaC").Single();
+        Assert.Equal("0", vetaC.Attribute("obrat23")?.Value);
+        Assert.Equal("20000", vetaC.Attribute("obrat5")?.Value);
+        Assert.Equal("0", vetaC.Attribute("pln23")?.Value);
+        Assert.Equal("1000", vetaC.Attribute("pln5")?.Value);
+    }
+
+    [Fact]
+    public void Multi_Rate_Document_Is_One_Kh_Row_And_Limit_Applies_To_Whole_Document()
+    {
+        // Faktura 20260009 má dvě sazby (dva řádky tabulky): 6 000+1 260 a 3 000+360. Jednotlivé
+        // řádky jsou pod 10 000 Kč, ale doklad jako celek (10 620 Kč) limit překračuje – musí být
+        // v A.4 jako jeden řádek se sloupci obou sazeb, ne rozpadnutý do A.5.
+        var exporter = new EpoXmlExporter();
+        var kh = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260009",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 6, 30),
+                TaxBaseCzk = 6_000m,
+                VatCzk = 1_260m
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260009",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 6, 30),
+                TaxBaseCzk = 3_000m,
+                VatCzk = 360m,
+                VatRate = VatRateKind.Reduced12
+            }
+        });
+
+        var vetaA4 = kh.Descendants("VetaA4").Single();
+        Assert.Equal("6000", vetaA4.Attribute("zakl_dane1")?.Value);
+        Assert.Equal("1260", vetaA4.Attribute("dan1")?.Value);
+        Assert.Equal("3000", vetaA4.Attribute("zakl_dane2")?.Value);
+        Assert.Equal("360", vetaA4.Attribute("dan2")?.Value);
+        Assert.Empty(kh.Descendants("VetaA5"));
     }
 
     [Fact]

@@ -12,7 +12,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
     private bool _isApplyingCounterparty;
 
     // "Reverse" = přijetí služby od osoby neusazené v tuzemsku (§108, zahraniční SaaS apod.),
-    // ř.12/13 + odpočet ř.43/44, mimo kontrolní hlášení. Viz InvoiceKind.ReverseCharge.
+    // ř.12/13 + odpočet ř.43/44, v kontrolním hlášení oddíl A.2. Viz InvoiceKind.ReverseCharge.
     public const string ReverseChargeLabel = "Reverse (zahr. služba)";
 
     public string[] KindOptions { get; } =

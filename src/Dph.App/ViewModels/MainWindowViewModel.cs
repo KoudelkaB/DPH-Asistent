@@ -1593,6 +1593,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
         await _repository.SaveTaxSubjectAsync(TaxSubject);
         Directory.CreateDirectory(ExportDirectory);
+
+        // d_poddp (datum podání) má odpovídat dni, kdy se přiznání skutečně generuje/podává –
+        // ne dni, kdy bylo období v aplikaci založeno.
+        SelectedPeriod.SubmissionDate = DateOnly.FromDateTime(DateTime.Today);
+        await _repository.SavePeriodAsync(SelectedPeriod);
+
         var invoices = Invoices.Select(x => x.ToDomain()).ToArray();
         var prefix = $"{SelectedPeriod.Year:D4}-{SelectedPeriod.Month:D2}";
 
@@ -1613,14 +1619,6 @@ public partial class MainWindowViewModel : ViewModelBase
         Issuing.RefreshVatPeriodStates();
         var kindLabel = corrective ? "Opravné" : "Řádné";
         StatusMessage = $"{kindLabel} přiznání: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
-
-        // Reverse-charge received supplies belong in KH oddíl B1, which we do not generate
-        // (it needs the kód předmětu plnění we don't model). Make the gap visible instead of silent.
-        var reverseChargeCount = invoices.Count(x => x.Kind == InvoiceKind.ReverseCharge);
-        if (reverseChargeCount > 0)
-        {
-            StatusMessage += $" Upozornění: {reverseChargeCount} reverse-charge řádků není v kontrolním hlášení (oddíl B1) – doplň ručně v EPO.";
-        }
     }
 
     // Opravné přiznání nesmí přepsat řádné ani předchozí opravné – najdeme první volný název.
@@ -1970,6 +1968,9 @@ public partial class MainWindowViewModel : ViewModelBase
 
             source.Id = 0;
             source.PeriodId = targetPeriod.Id;
+            // Kopie je jen předloha – nesmí zůstat svázaná s vydanou fakturou zdrojového měsíce,
+            // jinak by ji pozdější uložení té faktury smazalo/přepsalo v cizím období.
+            source.IssuedInvoiceId = null;
             if (!IsControlStatementSummary(source))
             {
                 source.EvidenceNumber = "";

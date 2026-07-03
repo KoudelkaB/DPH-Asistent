@@ -25,7 +25,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         //   - dodavatel ze třetí země / bez EU DIČ (např. GitHub, Anthropic z USA) → §108 → ř.12/13
         //     (Veta1 p_sl23_z / p_sl5_z).
         // Nárok na odpočet u obojího jde na ř.43/44 (Veta4 nar_zdp / od_zdp). NENÍ to tuzemský režim
-        // přenesení §92a (ř.10/11 + KH B1) a do kontrolního hlášení tato plnění NEPATŘÍ.
+        // přenesení §92a (ř.10/11 + KH B1); v kontrolním hlášení se tato plnění vykazují v oddílu A.2.
         var b = ComputeBuckets(lines);
 
         // Tuzemská plnění dělíme podle sazby na základní (ř.1/40) a sníženou (ř.2/41). Každý řádek
@@ -198,80 +198,151 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
             ControlStatementHeader(period, formType ?? period.FormType),
             TaxSubjectElement(subject, includeDataBox: true));
 
-        // Pouze tuzemská plnění: vydaná (A4/A5) a přijatá s českou DPH (B2/B3). Reverse charge
-        // (přijetí služby od osoby neusazené v tuzemsku, §108) do kontrolního hlášení nepatří.
+        // A.2 – přijatá plnění, u kterých přiznává daň příjemce (ř. 3, 4, 5, 6, 9, 12 a 13 DP),
+        // tedy i zde modelovaný reverse charge (přijetí služby ze zahraničí, ř.5/6 a ř.12/13).
+        // Uvádí se po dokladech bez hodnotového limitu; VAT ID dodavatele se rozděluje na kód
+        // státu a číslo a vyplňuje se jen u dodavatele registrovaného v EU.
         var row = 1;
-        foreach (var invoice in lines.Where(IsIssuedDetail))
+        foreach (var document in GroupByDocument(lines, InvoiceKind.ReverseCharge))
         {
-            dph.Add(new XElement("VetaA4",
+            var (state, vatId) = SplitEuVatId(document.Dic);
+            var element = new XElement("VetaA2",
                 A("c_radku", row++),
-                A("c_evid_dd", invoice.EvidenceNumber),
-                A("dppd", Date(invoice.TaxableSupplyDate)),
-                A("dic_odb", StripCz(invoice.CounterpartyDic)),
-                A("zakl_dane1", Money(invoice.TaxBaseCzk)),
-                A("dan1", Money(_calculator.ResolveVat(invoice))),
-                A("kod_rezim_pl", "0"),
-                A("zdph_44", "N")));
+                A("k_stat", state),
+                A("vatid_dod", vatId),
+                A("c_evid_dd", document.EvidenceNumber),
+                A("dppd", Date(document.TaxableSupplyDate)));
+            AddRateColumns(element, document.Lines);
+            dph.Add(element);
         }
 
-        var smallIssued = lines.Where(IsIssuedSmall).ToArray();
-        if (smallIssued.Length > 0)
-        {
-            dph.Add(new XElement("VetaA5",
-                A("zakl_dane1", Money(smallIssued.Sum(x => x.TaxBaseCzk))),
-                A("dan1", Money(smallIssued.Sum(x => _calculator.ResolveVat(x))))));
-        }
-
+        // A.4/A.5 a B.2/B.3: limit 10 000 Kč vč. daně platí pro celý doklad, proto se řádky
+        // tabulky (jeden na sazbu) nejdřív seskupí podle dokladu; sazby jdou do sloupců
+        // zakl_dane1/dan1 (základní) a zakl_dane2/dan2 (snížená).
+        var issuedDocuments = GroupByDocument(lines, InvoiceKind.IssuedDomestic);
         row = 1;
-        foreach (var invoice in lines.Where(IsReceivedDetail))
+        foreach (var document in issuedDocuments.Where(x => IsDetail(x, "A5")))
         {
-            dph.Add(new XElement("VetaB2",
+            var element = new XElement("VetaA4",
                 A("c_radku", row++),
-                A("c_evid_dd", invoice.EvidenceNumber),
-                A("dppd", Date(invoice.TaxableSupplyDate)),
-                A("dic_dod", StripCz(invoice.CounterpartyDic)),
-                A("zakl_dane1", Money(invoice.TaxBaseCzk)),
-                A("dan1", Money(_calculator.ResolveVat(invoice))),
-                A("pomer", invoice.PartialDeduction ? "A" : "N"),
-                A("zdph_44", "N")));
+                A("c_evid_dd", document.EvidenceNumber),
+                A("dppd", Date(document.TaxableSupplyDate)),
+                A("dic_odb", StripCz(document.Dic)));
+            AddRateColumns(element, document.Lines);
+            element.Add(A("kod_rezim_pl", "0"), A("zdph_44", "N"));
+            dph.Add(element);
         }
 
-        var smallReceived = lines.Where(IsReceivedSmall).ToArray();
-        if (smallReceived.Length > 0)
+        AddSummarySection(dph, "VetaA5", issuedDocuments.Where(x => !IsDetail(x, "A5")));
+
+        var receivedDocuments = GroupByDocument(lines, InvoiceKind.ReceivedDomesticWithVat);
+        row = 1;
+        foreach (var document in receivedDocuments.Where(x => IsDetail(x, "B3")))
         {
-            dph.Add(new XElement("VetaB3",
-                A("zakl_dane1", Money(smallReceived.Sum(x => x.TaxBaseCzk))),
-                A("dan1", Money(smallReceived.Sum(x => _calculator.ResolveVat(x))))));
+            var element = new XElement("VetaB2",
+                A("c_radku", row++),
+                A("c_evid_dd", document.EvidenceNumber),
+                A("dppd", Date(document.TaxableSupplyDate)),
+                A("dic_dod", StripCz(document.Dic)));
+            AddRateColumns(element, document.Lines);
+            element.Add(
+                A("pomer", document.Lines.Any(x => x.PartialDeduction) ? "A" : "N"),
+                A("zdph_44", "N"));
+            dph.Add(element);
         }
 
-        var summary = _calculator.Calculate(lines);
+        AddSummarySection(dph, "VetaB3", receivedDocuments.Where(x => !IsDetail(x, "B3")));
+
+        // Kontrolní součty oddílů; EPO je porovnává s řádky přiznání (ř.1/2, ř.40/41, ř.5+6+12+13),
+        // proto musí sedět dělení podle sazeb i součet základů A.2.
+        var issuedLines = lines.Where(x => x.Kind == InvoiceKind.IssuedDomestic).ToArray();
+        var receivedLines = lines.Where(x => x.Kind == InvoiceKind.ReceivedDomesticWithVat).ToArray();
         dph.Add(new XElement("VetaC",
-            A("obrat23", Money(summary.ControlStatementOutputBase)),
-            A("pln23", Money(summary.ControlStatementInputBase))));
+            A("obrat23", Money(SumBase(issuedLines, reduced: false))),
+            A("obrat5", Money(SumBase(issuedLines, reduced: true))),
+            A("pln23", Money(SumBase(receivedLines, reduced: false))),
+            A("pln5", Money(SumBase(receivedLines, reduced: true))),
+            A("celk_zd_a2", Money(lines.Where(x => x.Kind == InvoiceKind.ReverseCharge).Sum(x => x.TaxBaseCzk)))));
 
         return Wrap(dph);
     }
 
-    private bool IsIssuedDetail(InvoiceLine invoice)
-        => invoice.Kind == InvoiceKind.IssuedDomestic
-           && !IsSummary(invoice, "A5")
-           && invoice.GrossCzk > _definition.ControlStatementDetailLimitCzk;
+    // Jeden doklad KH = shodné evidenční číslo + protistrana. Faktura s více sazbami je v tabulce
+    // jako víc řádků (jeden na sazbu) a v KH musí tvořit jediný řádek se sloupci podle sazeb;
+    // řádky bez evidenčního čísla se neslučují (nejde poznat, že patří k sobě).
+    private static List<ControlStatementDocument> GroupByDocument(InvoiceLine[] lines, InvoiceKind kind)
+        => lines
+            .Where(x => x.Kind == kind)
+            .GroupBy(x => string.IsNullOrWhiteSpace(x.EvidenceNumber)
+                ? $"#{x.Id}"
+                : $"{x.EvidenceNumber.Trim().ToUpperInvariant()}|{x.CounterpartyDic?.Trim().ToUpperInvariant()}")
+            .Select(g => new ControlStatementDocument(
+                g.First().EvidenceNumber,
+                g.First().CounterpartyDic,
+                g.Min(x => x.TaxableSupplyDate),
+                [.. g]))
+            .ToList();
 
-    private bool IsIssuedSmall(InvoiceLine invoice)
-        => invoice.Kind == InvoiceKind.IssuedDomestic
-           && (IsSummary(invoice, "A5") || invoice.GrossCzk <= _definition.ControlStatementDetailLimitCzk);
+    private sealed record ControlStatementDocument(
+        string EvidenceNumber,
+        string? Dic,
+        DateOnly TaxableSupplyDate,
+        IReadOnlyList<InvoiceLine> Lines)
+    {
+        public decimal GrossCzk => Lines.Sum(x => x.GrossCzk);
+    }
 
-    private bool IsReceivedDetail(InvoiceLine invoice)
-        => invoice.Kind == InvoiceKind.ReceivedDomesticWithVat
-           && !IsSummary(invoice, "B3")
-           && invoice.GrossCzk > _definition.ControlStatementDetailLimitCzk;
+    private bool IsDetail(ControlStatementDocument document, string summaryCode)
+        => !string.Equals(document.EvidenceNumber, summaryCode, StringComparison.OrdinalIgnoreCase)
+           && document.GrossCzk > _definition.ControlStatementDetailLimitCzk;
 
-    private bool IsReceivedSmall(InvoiceLine invoice)
-        => invoice.Kind == InvoiceKind.ReceivedDomesticWithVat
-           && (IsSummary(invoice, "B3") || invoice.GrossCzk <= _definition.ControlStatementDetailLimitCzk);
+    // Souhrnný řádek (A.5/B.3) za doklady pod limitem a za importované souhrny.
+    private void AddSummarySection(XElement dph, string elementName, IEnumerable<ControlStatementDocument> documents)
+    {
+        var lines = documents.SelectMany(x => x.Lines).ToArray();
+        if (lines.Length == 0)
+        {
+            return;
+        }
 
-    private static bool IsSummary(InvoiceLine invoice, string code)
-        => string.Equals(invoice.EvidenceNumber, code, StringComparison.OrdinalIgnoreCase);
+        var element = new XElement(elementName);
+        AddRateColumns(element, lines);
+        dph.Add(element);
+    }
+
+    // Sloupce KH podle sazby: 1 = základní (vč. 0 %), 2 = snížená 12 % – stejné dělení jako
+    // ř.1/ř.2 přiznání, aby křížová kontrola DP ↔ KH seděla.
+    private void AddRateColumns(XElement element, IEnumerable<InvoiceLine> lines)
+    {
+        var byRate = lines.ToLookup(x => x.VatRate == VatRateKind.Reduced12);
+        AddRatePair(element, "zakl_dane1", "dan1", [.. byRate[false]]);
+        AddRatePair(element, "zakl_dane2", "dan2", [.. byRate[true]]);
+    }
+
+    private void AddRatePair(XElement element, string baseAttr, string vatAttr, InvoiceLine[] lines)
+    {
+        if (lines.Length == 0)
+        {
+            return;
+        }
+
+        element.Add(
+            A(baseAttr, Money(lines.Sum(x => x.TaxBaseCzk))),
+            A(vatAttr, Money(lines.Sum(_calculator.ResolveVat))));
+    }
+
+    private static decimal SumBase(IEnumerable<InvoiceLine> lines, bool reduced)
+        => lines.Where(x => (x.VatRate == VatRateKind.Reduced12) == reduced).Sum(x => x.TaxBaseCzk);
+
+    // VAT ID dodavatele pro A.2 rozdělené na kód státu a číslo. Dodavatel ze třetí země bez EU
+    // registrace nechává obě pole prázdná.
+    private static (string State, string Number) SplitEuVatId(string? dic)
+    {
+        var trimmed = dic?.Trim();
+        return trimmed is { Length: > 2 } && EuVatPrefixes.Contains(trimmed[..2])
+            ? (trimmed[..2].ToUpperInvariant(), trimmed[2..])
+            : ("", "");
+    }
 
     private XElement VatReturnHeader(TaxSubject subject, VatPeriod period, string formType) => new("VetaD",
         A("dokument", "DP3"),

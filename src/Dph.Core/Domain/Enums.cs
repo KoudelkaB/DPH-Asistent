@@ -23,7 +23,7 @@ public enum InvoiceKind
     /// <item>dodavatel registrovaný v JČS (EU prefix, např. IE) → §9(1) → <b>ř.5/6</b>;</item>
     /// <item>dodavatel ze třetí země / bez EU DIČ (USA) → §108 → <b>ř.12/13</b>.</item>
     /// </list>
-    /// Odpočet u obojího jde na <b>ř.43/44</b>; do kontrolního hlášení <b>nepatří</b>.
+    /// Odpočet u obojího jde na <b>ř.43/44</b>; v kontrolním hlášení se vykazují v oddílu <b>A.2</b>.
     /// POZOR: NEjde o tuzemský režim přenesení daňové povinnosti §92a (stavební práce, kovy…),
     /// který by patřil na ř.10/11 a do KH oddílu B1 – ten zde záměrně nemodelujeme.
     /// </summary>

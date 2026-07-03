@@ -13,8 +13,6 @@ public sealed class VatReturnSummary
     public decimal TaxDue => DomesticOutputVat + ReverseChargeVat;
     public decimal TaxDeduction => DomesticInputVat + ReverseChargeVat;
     public decimal NetTax => TaxDue - TaxDeduction;
-    public decimal ControlStatementOutputBase => DomesticOutputBase;
-    public decimal ControlStatementInputBase => DomesticInputBase;
 }
 
 public sealed class VatCalculator
