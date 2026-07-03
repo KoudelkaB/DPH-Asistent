@@ -1,11 +1,53 @@
 using System.Globalization;
 using Dph.Core.Domain;
 using Dph.Core.Persistence;
+using Microsoft.Data.Sqlite;
 
 namespace Dph.Core.Tests;
 
 public sealed class DphRepositoryTests
 {
+    [Fact]
+    public async Task Migrates_V010_Database_Linking_Vat_Rows_And_Locking_Inserted_Invoices()
+    {
+        // DB přesně ve schématu vydané verze 0.1.0: bez issued_invoice_id, bez zámků a souhrnů
+        // vydaných faktur; vazba faktura → řádek přiznání jen shodou čísla dokladu.
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path }.ToString()))
+        {
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = """
+                create table periods (id integer primary key, year integer not null, month integer not null, submission_date text not null, form_type text not null, imported_at text null, exported_at text null, changed_at text null, unique(year, month));
+                create table invoice_lines (id integer primary key, period_id integer not null, kind text not null, counterparty_id integer null, counterparty_name text not null, counterparty_dic text null, evidence_number text not null, taxable_supply_date text not null, tax_base_czk text not null, vat_czk text not null, currency text not null, foreign_amount text null, exchange_rate text null, vat_rate text not null, partial_deduction integer not null default 0, note text null);
+                create table issued_invoices (id integer primary key, number text not null unique, issue_date text not null, taxable_supply_date text not null, due_date text not null, customer_id integer null, customer_name text not null, customer_ico text null, customer_dic text null, customer_street text null, customer_house_number text null, customer_city text null, customer_postal_code text null, customer_country text not null, currency text not null, variable_symbol text null, payment_method text null, intro_text text null, note text null, footer text null, created_at text not null);
+                insert into periods (year, month, submission_date, form_type) values (2026, 5, '2026-06-20', 'B');
+                insert into issued_invoices (number, issue_date, taxable_supply_date, due_date, customer_name, customer_country, currency, created_at) values ('20260001', '2026-05-31', '2026-05-31', '2026-06-14', 'Odběratel s.r.o.', 'Česká republika', 'CZK', '2026-05-31T10:00:00Z');
+                insert into invoice_lines (period_id, kind, counterparty_name, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, vat_rate) values (1, 'IssuedDomestic', 'Odběratel s.r.o.', '20260001', '2026-05-31', '1000', '210', 'CZK', 'Standard21');
+                insert into invoice_lines (period_id, kind, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, vat_rate) values (1, 'ReceivedDomesticWithVat', 'Dodavatel', 'CZ27082440', 'FV-77', '2026-05-12', '500', '105', 'CZK', 'Standard21');
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+
+        // Řádek vydané faktury se naváže podle čísla dokladu, přijatý zůstane bez vazby.
+        Assert.Equal([1L], await repository.LoadPeriodIdsForIssuedInvoiceAsync(1));
+        var lines = await repository.LoadInvoicesAsync(1);
+        Assert.Equal(1, lines.Single(x => x.Kind == InvoiceKind.IssuedDomestic).IssuedInvoiceId);
+        Assert.Null(lines.Single(x => x.Kind == InvoiceKind.ReceivedDomesticWithVat).IssuedInvoiceId);
+
+        // Faktura vložená do přiznání dostane zámek (0.1.0 znala jen zámek období).
+        var invoice = (await repository.LoadIssuedInvoicesAsync()).Single();
+        Assert.NotNull(invoice.VatInsertedAt);
+        Assert.True(invoice.IsLockedByHistory);
+
+        // Opakovaná inicializace je neškodná (migrace už neběží).
+        await repository.InitializeAsync();
+        Assert.Equal(invoice.VatInsertedAt, (await repository.LoadIssuedInvoicesAsync()).Single().VatInsertedAt);
+    }
+
     [Fact]
     public async Task Persists_Decimals_Independently_Of_Current_Culture()
     {

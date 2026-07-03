@@ -31,7 +31,9 @@ public sealed class DphRepository(string databasePath)
                 tax_office_code text not null,
                 workplace_code text not null,
                 data_box_id text null,
-                activity_code text not null
+                activity_code text not null,
+                bank_account text null,
+                iban text null
             );
             create table if not exists counterparties (
                 id integer primary key,
@@ -135,24 +137,67 @@ public sealed class DphRepository(string databasePath)
                 sort_order integer not null default 0
             );
             """, cancellationToken);
-        await EnsureColumnAsync(connection, "periods", "imported_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "periods", "exported_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "periods", "changed_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "invoice_lines", "partial_deduction", "integer not null default 0", cancellationToken);
+        await MigrateAsync(connection, cancellationToken);
+    }
+
+    // Migrace se píšou jen mezi vydanými verzemi (git tag v0.1.0 → chystané vydání), ne mezi
+    // jednotlivými commity. Verzi schématu drží "pragma user_version": 0 = čistá DB nebo DB
+    // z verze 0.1.0, 1 = aktuální vydání. Na čisté DB jsou kroky neškodné (žádná data).
+    private const long CurrentSchemaVersion = 1;
+
+    private static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        long version;
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "pragma user_version";
+            version = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+        }
+
+        if (version >= CurrentSchemaVersion)
+        {
+            return;
+        }
+
+        // 0.1.0 → 0.2.0: vazba řádků DPH na vydané faktury, adresa v adresáři, zámek (PDF/DPH)
+        // a denormalizované souhrny vydaných faktur.
         await EnsureColumnAsync(connection, "invoice_lines", "issued_invoice_id", "integer null", cancellationToken);
-        await EnsureColumnAsync(connection, "tax_subjects", "bank_account", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "tax_subjects", "iban", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "intro_text", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
+        await EnsureColumnAsync(connection, "counterparties", "postal_code", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "pdf_exported_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "vat_inserted_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "pdf_changed_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "vat_changed_at", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "total_base_czk", "text null", cancellationToken);
         await EnsureColumnAsync(connection, "issued_invoices", "total_vat_czk", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "postal_code", "text null", cancellationToken);
+
+        // Data z 0.1.0: řádky přiznání vzniklé z vydaných faktur byly vázané jen shodou čísla
+        // dokladu – doplní se explicitní vazba. Fakturám, které už v nějakém přiznání jsou, se
+        // nastaví zámek vat_inserted_at (0.1.0 znala jen zámek období; přesný čas vložení
+        // neevidovala, použije se čas migrace). Zámek z PDF exportu zpětně zjistit nejde.
+        await ExecuteAsync(connection, """
+            update invoice_lines
+            set issued_invoice_id = (select i.id from issued_invoices i where i.number = invoice_lines.evidence_number)
+            where issued_invoice_id is null
+              and kind = 'IssuedDomestic'
+              and exists (select 1 from issued_invoices i where i.number = invoice_lines.evidence_number)
+            """, cancellationToken);
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                update issued_invoices
+                set vat_inserted_at = $now
+                where vat_inserted_at is null
+                  and id in (select distinct issued_invoice_id from invoice_lines where issued_invoice_id is not null)
+                """;
+            Add(command, "$now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await ExecuteAsync(connection, $"pragma user_version = {CurrentSchemaVersion}", cancellationToken);
     }
 
     public async Task<TaxSubject?> LoadTaxSubjectAsync(CancellationToken cancellationToken = default)

@@ -77,13 +77,6 @@ public partial class MainWindowViewModel : ViewModelBase
         (_, _) => Task.FromResult(ReexportChoice.Regular);
     public Func<string, Task> CopyToClipboardAsync { get; set; } = _ => Task.CompletedTask;
 
-    public string[] InvoiceKindOptions { get; } =
-    [
-        "Vydaná",
-        "Přijatá",
-        InvoiceLineViewModel.ReverseChargeLabel
-    ];
-
     public string[] CounterpartyRoleOptions { get; } =
     [
         CounterpartyRole.Customer.ToString(),
@@ -1985,8 +1978,7 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     private static bool IsControlStatementSummary(InvoiceLine invoice)
-        => string.Equals(invoice.EvidenceNumber, "A5", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(invoice.EvidenceNumber, "B3", StringComparison.OrdinalIgnoreCase);
+        => InvoiceKindClassifier.IsControlStatementSummary(invoice.EvidenceNumber);
 
     private Task<bool> ConfirmProtectedPeriodChangeAsync(string action)
         => SelectedPeriod is null

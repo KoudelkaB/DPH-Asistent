@@ -184,21 +184,23 @@
                                 <ScrollViewer Grid.Row="1"
                                               HorizontalScrollBarVisibility="Auto"
                                               VerticalScrollBarVisibility="Auto">
-                                    <Grid RowDefinitions="Auto,*" RowSpacing="8" MinWidth="1490">
-                                        <Grid ColumnDefinitions="145,180,110,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6">
+                                    <Grid RowDefinitions="Auto,*" RowSpacing="8" MinWidth="1540">
+                                        <Grid ColumnDefinitions="95,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6">
                                             <TextBlock Text="Typ"/>
                                             <TextBlock Grid.Column="1" Text="Subjekt"/>
                                             <TextBlock Grid.Column="2" Text="DIČ"/>
-                                            <TextBlock Grid.Column="3" Text="Doklad"/>
-                                            <TextBlock Grid.Column="4" Text="DUZP"/>
-                                            <TextBlock Grid.Column="5" Text="Základ"/>
-                                            <TextBlock Grid.Column="6" Text="DPH"/>
-                                            <TextBlock Grid.Column="7" Text="S DPH"/>
-                                            <TextBlock Grid.Column="8" Text="Sazba"/>
-                                            <TextBlock Grid.Column="9" Text="Část."/>
-                                            <TextBlock Grid.Column="10" Text="Měna"/>
-                                            <TextBlock Grid.Column="11" Text="Cizí částka"/>
-                                            <TextBlock Grid.Column="12" Text="Poznámka"/>
+                                            <TextBlock Grid.Column="3" Text="Režim"
+                                                       ToolTip.Tip="Režim DPH se odvozuje automaticky z DIČ: prefix CZ (nebo jen číslice) = tuzemské plnění, prefix jiného členského státu = reverse charge EU (ř.5/6), prázdné či mimounijní DIČ = reverse charge 3. země (ř.12/13)."/>
+                                            <TextBlock Grid.Column="4" Text="Doklad"/>
+                                            <TextBlock Grid.Column="5" Text="DUZP"/>
+                                            <TextBlock Grid.Column="6" Text="Základ"/>
+                                            <TextBlock Grid.Column="7" Text="DPH"/>
+                                            <TextBlock Grid.Column="8" Text="S DPH"/>
+                                            <TextBlock Grid.Column="9" Text="Sazba"/>
+                                            <TextBlock Grid.Column="10" Text="Část."/>
+                                            <TextBlock Grid.Column="11" Text="Měna"/>
+                                            <TextBlock Grid.Column="12" Text="Cizí částka"/>
+                                            <TextBlock Grid.Column="13" Text="Poznámka"/>
                                         </Grid>
 
                                         <ListBox Grid.Row="1"
@@ -219,8 +221,8 @@
                                             </ListBox.Styles>
                                             <ListBox.ItemTemplate>
                                                 <DataTemplate x:DataType="vm:InvoiceLineViewModel">
-                                                    <Grid ColumnDefinitions="145,180,110,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6" Margin="0,2">
-                                                        <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="135"/>
+                                                    <Grid ColumnDefinitions="95,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6" Margin="0,2">
+                                                        <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="90"/>
                                                         <Grid Grid.Column="1" ColumnDefinitions="*,34" ColumnSpacing="4">
                                                             <TextBox Text="{Binding CounterpartyName, UpdateSourceTrigger=PropertyChanged}"/>
                                                             <ComboBox Grid.Column="1"
@@ -235,15 +237,21 @@
                                                             </ComboBox>
                                                         </Grid>
                                                         <TextBox Grid.Column="2" Text="{Binding CounterpartyDic, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        <TextBox Grid.Column="3" Text="{Binding EvidenceNumber}"/>
-                                                        <TextBox Grid.Column="4" Text="{Binding TaxableSupplyDate}"/>
-                                                        <TextBox Grid.Column="5" Text="{Binding TaxBaseCzk, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        <TextBox Grid.Column="6" Text="{Binding VatCzk, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        <TextBox Grid.Column="7" Text="{Binding GrossCzk, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        <ComboBox Grid.Column="8" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
+                                                        <!-- Režim DPH odvozený z DIČ (tuzemská / RC EU / RC 3. země) – jen ke čtení. -->
+                                                        <Border Grid.Column="3" Background="Transparent"
+                                                                ToolTip.Tip="{Binding VatModeTooltip}"
+                                                                VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding VatModeText}" Foreground="#6B7280" FontSize="12"/>
+                                                        </Border>
+                                                        <TextBox Grid.Column="4" Text="{Binding EvidenceNumber}"/>
+                                                        <TextBox Grid.Column="5" Text="{Binding TaxableSupplyDate}"/>
+                                                        <TextBox Grid.Column="6" Text="{Binding TaxBaseCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                        <TextBox Grid.Column="7" Text="{Binding VatCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                        <TextBox Grid.Column="8" Text="{Binding GrossCzk, UpdateSourceTrigger=PropertyChanged}"/>
+                                                        <ComboBox Grid.Column="9" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
                                                         <!-- Tooltip na wrapperu: disablovaný CheckBox nepřijímá pointer eventy, takže ToolTip.Tip
                                                              na něm samotném by se nikdy nezobrazil. Wrapper zůstává enabled. -->
-                                                        <Border Grid.Column="9"
+                                                        <Border Grid.Column="10"
                                                                 IsVisible="{Binding ShowPartialDeduction}"
                                                                 ToolTip.Tip="{Binding PartialDeductionTooltip}"
                                                                 Background="Transparent"
@@ -252,9 +260,9 @@
                                                                       IsEnabled="{Binding IsPartialDeductionEnabled}"
                                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                         </Border>
-                                                        <TextBox Grid.Column="10" Text="{Binding Currency}"/>
-                                                        <TextBox Grid.Column="11" Text="{Binding ForeignAmount}"/>
-                                                        <TextBox Grid.Column="12" Text="{Binding Note}"/>
+                                                        <TextBox Grid.Column="11" Text="{Binding Currency}"/>
+                                                        <TextBox Grid.Column="12" Text="{Binding ForeignAmount}"/>
+                                                        <TextBox Grid.Column="13" Text="{Binding Note}"/>
                                                     </Grid>
                                                 </DataTemplate>
                                             </ListBox.ItemTemplate>

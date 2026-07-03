@@ -10,7 +10,7 @@ public sealed class EpoTaxFormDefinition
     public string ControlStatementVersion { get; init; } = "03.01";
     public decimal ControlStatementDetailLimitCzk { get; init; } = 10_000m;
     public string SoftwareName { get; init; } = "DPH Asistent";
-    public string SoftwareVersion { get; init; } = "0.1.0";
+    public string SoftwareVersion { get; init; } = "0.2.0";
 
     // Reverse charge v této aplikaci = přijetí služby ze zahraničí: dodavatel z EU (§9 odst.1) →
     // ř.5/6, ze třetí země (§108) → ř.12/13; odpočet ř.43/44. Není to tuzemský přenos §92a (KH B1);

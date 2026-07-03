@@ -177,18 +177,8 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         return (reportedBase, ReverseChargeVatForReportedBase(reportedBase, bucket));
     }
 
-    // EU VAT prefixy (mimo CZ = tuzemsko); EL = Řecko, XI = Severní Irsko.
-    private static readonly HashSet<string> EuVatPrefixes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "AT", "BE", "BG", "HR", "CY", "DK", "EE", "FI", "FR", "DE", "EL", "HU", "IE", "IT",
-        "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "XI"
-    };
-
     private static bool IsEuSupplier(InvoiceLine invoice)
-    {
-        var dic = invoice.CounterpartyDic?.Trim();
-        return dic is { Length: >= 2 } && EuVatPrefixes.Contains(dic[..2]);
-    }
+        => InvoiceKindClassifier.IsEuSupplier(invoice.CounterpartyDic);
 
     public XDocument ExportControlStatement(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null)
     {
@@ -339,7 +329,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private static (string State, string Number) SplitEuVatId(string? dic)
     {
         var trimmed = dic?.Trim();
-        return trimmed is { Length: > 2 } && EuVatPrefixes.Contains(trimmed[..2])
+        return trimmed is { Length: > 2 } && InvoiceKindClassifier.IsEuSupplier(trimmed)
             ? (trimmed[..2].ToUpperInvariant(), trimmed[2..])
             : ("", "");
     }
