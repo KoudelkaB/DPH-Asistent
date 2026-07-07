@@ -210,8 +210,12 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     {
         public long StdDeductBase => EuStd.Base + NonEuStd.Base;
         public long RedDeductBase => EuRed.Base + NonEuRed.Base;
-        public long StdDeductVat => TaxFromReportedBase(StdDeductBase, VatRateKind.Standard21);
-        public long RedDeductVat => TaxFromReportedBase(RedDeductBase, VatRateKind.Reduced12);
+        // Odpočet ř.43/44 = daň skutečně přiznaná na výstupu na ř.5/6/12/13, tedy SOUČET daní
+        // jednotlivých řádků – ne round(sečtený_základ × sazba). Kdyby se daň dopočítávala znovu
+        // ze sloučeného základu (412+208=620 → round(130,2)=130), lišila by se o korunu od výstupu
+        // (87+44=131) a reverse charge by se ve vlastní dani nevyrušil (ř.66 by nesedělo o 1 Kč).
+        public long StdDeductVat => EuStd.Vat + NonEuStd.Vat;
+        public long RedDeductVat => EuRed.Vat + NonEuRed.Vat;
         public long TaxDueWhole => OutStd.Vat + OutRed.Vat + EuStd.Vat + EuRed.Vat + NonEuStd.Vat + NonEuRed.Vat;
         public long TaxDeductionWhole => InStd.Vat + InRed.Vat + StdDeductVat + RedDeductVat;
         public long NetTaxWhole => TaxDueWhole - TaxDeductionWhole;

@@ -282,6 +282,43 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
+    public void Mixed_Eu_And_Third_Country_Reverse_Charge_Cancels_In_Net_Tax()
+    {
+        // Reprodukce hlášené chyby: reverse charge (EU 412,40 + třetí země 208,14) se musí ve
+        // vlastní dani vyrušit. Daň po řádcích: 87 + 44 = 131; odpočet ř.43 musí být také 131,
+        // ne round(sloučený_základ 620 × 0,21) = 130 – jinak dano vyjde o 1 Kč špatně.
+        var exporter = new EpoXmlExporter();
+        var dph = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 4 }, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge, EvidenceNumber = "IE-1", CounterpartyDic = "IE4143435AH",
+                TaxableSupplyDate = new DateOnly(2026, 4, 30), TaxBaseCzk = 412.40m, VatCzk = 86.60m
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge, EvidenceNumber = "US-1",
+                TaxableSupplyDate = new DateOnly(2026, 4, 30), TaxBaseCzk = 208.14m, VatCzk = 43.71m
+            }
+        });
+
+        var veta1 = dph.Descendants("Veta1").Single();
+        Assert.Equal("87", veta1.Attribute("dan_psl23_e")?.Value);
+        Assert.Equal("44", veta1.Attribute("dan_psl23_z")?.Value);
+
+        // ř.43: základ = 412 + 208, daň = 87 + 44 (součet výstupu), ne round(620 × 0,21) = 130.
+        var veta4 = dph.Descendants("Veta4").Single();
+        Assert.Equal("620", veta4.Attribute("nar_zdp23")?.Value);
+        Assert.Equal("131", veta4.Attribute("od_zdp23")?.Value);
+        Assert.Equal("131", veta4.Attribute("odp_sum_nar")?.Value);
+
+        var veta6 = dph.Descendants("Veta6").Single();
+        Assert.Equal("131", veta6.Attribute("dan_zocelk")?.Value);
+        Assert.Equal("131", veta6.Attribute("odp_zocelk")?.Value);
+        Assert.Equal("0", veta6.Attribute("dano_da")?.Value);
+    }
+
+    [Fact]
     public void Reduced_Rate_Foreign_Reverse_Charge_Uses_Rows_13_And_44()
     {
         var exporter = new EpoXmlExporter();
