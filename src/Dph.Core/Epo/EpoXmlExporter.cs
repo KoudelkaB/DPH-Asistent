@@ -10,12 +10,22 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private readonly EpoTaxFormDefinition _definition = definition ?? EpoTaxFormDefinition.Current;
     private readonly VatCalculator _calculator = new();
 
-    public XDocument ExportVatReturn(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null)
+    // lastKnownReturns: dříve podaná přiznání období – naposledy podané řádné/opravné DP a za ním
+    // případná už podaná dodatečná DP (jejich rozdíly se přičtou). Povinné pro dodatečné přiznání
+    // (forma D/E), které se dle pokynů k DPHDP3 vyplňuje jen rozdílově oproti poslední známé dani.
+    public XDocument ExportVatReturn(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null, IReadOnlyCollection<XDocument>? lastKnownReturns = null)
     {
+        var resolvedFormType = formType ?? period.FormType;
+        var supplementary = resolvedFormType is "D" or "E";
+        if (supplementary && (lastKnownReturns is null || lastKnownReturns.Count == 0))
+        {
+            throw new ArgumentException("Dodatečné přiznání (forma D/E) vyžaduje naposledy podané přiznání pro výpočet rozdílů.", nameof(lastKnownReturns));
+        }
+
         var lines = invoices.ToArray();
         var dph = new XElement(_definition.VatReturnElement,
             new XAttribute("verzePis", _definition.VatReturnVersion),
-            VatReturnHeader(subject, period, formType ?? period.FormType),
+            VatReturnHeader(subject, period, resolvedFormType),
             TaxSubjectElement(subject));
 
         // InvoiceKind.ReverseCharge = přijetí služby ze zahraničí, kde daň přiznává příjemce. Řádek
@@ -26,58 +36,144 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         //     (Veta1 p_sl23_z / p_sl5_z).
         // Nárok na odpočet u obojího jde na ř.43/44 (Veta4 nar_zdp / od_zdp). NENÍ to tuzemský režim
         // přenesení §92a (ř.10/11 + KH B1); v kontrolním hlášení se tato plnění vykazují v oddílu A.2.
-        var b = ComputeBuckets(lines);
+        var buckets = ComputeBuckets(lines);
+
+        // V dodatečném přiznání se uvádí pouze rozdíly od údajů, ze kterých byla stanovena poslední
+        // známá daň (pokyny k DPHDP3). Odečítají se hodnoty skutečně vykázané v podaném XML – ne
+        // rekonstrukce z aktuální logiky výpočtu, aby rozdíl seděl i proti podáním ze starších verzí
+        // aplikace; jejich řádky, které dnes už negenerujeme, se vynulují zápornou hodnotou.
+        var previous = supplementary ? SumReportedValues(lastKnownReturns!) : new Dictionary<(string, string), long>();
+        var consumed = new HashSet<(string Element, string Attribute)>();
+        long Previous(string element, string attribute)
+        {
+            consumed.Add((element, attribute));
+            return previous.GetValueOrDefault((element, attribute));
+        }
+
+        void AddDiffRow(XElement element, string baseAttr, string vatAttr, (long Base, long Vat) current)
+            => AddRow(element, baseAttr, vatAttr, (
+                current.Base - Previous(element.Name.LocalName, baseAttr),
+                current.Vat - Previous(element.Name.LocalName, vatAttr)));
 
         // Tuzemská plnění dělíme podle sazby na základní (ř.1/40) a sníženou (ř.2/41). Každý řádek
         // se do XML zapisuje vždy jako dvojice základ+daň – EPO jinak hlásí „je zadána jen jedna
         // z hodnot“ (kód 48).
         var veta1 = new XElement("Veta1");
-        AddRow(veta1, "obrat23", "dan23", b.OutStd);                // ř.1  tuzemsko, základní sazba
-        AddRow(veta1, "obrat5", "dan5", b.OutRed);                  // ř.2  tuzemsko, snížená sazba
-        AddRow(veta1, "p_sl23_e", "dan_psl23_e", b.EuStd);          // ř.5  EU služba, základní sazba
-        AddRow(veta1, "p_sl5_e", "dan_psl5_e", b.EuRed);            // ř.6  EU služba, snížená sazba
-        AddRow(veta1, "p_sl23_z", "dan_psl23_z", b.NonEuStd);       // ř.12 třetí země, základní sazba
-        AddRow(veta1, "p_sl5_z", "dan_psl5_z", b.NonEuRed);         // ř.13 třetí země, snížená sazba
+        AddDiffRow(veta1, "obrat23", "dan23", buckets.OutStd);          // ř.1  tuzemsko, základní sazba
+        AddDiffRow(veta1, "obrat5", "dan5", buckets.OutRed);            // ř.2  tuzemsko, snížená sazba
+        AddDiffRow(veta1, "p_sl23_e", "dan_psl23_e", buckets.EuStd);    // ř.5  EU služba, základní sazba
+        AddDiffRow(veta1, "p_sl5_e", "dan_psl5_e", buckets.EuRed);      // ř.6  EU služba, snížená sazba
+        AddDiffRow(veta1, "p_sl23_z", "dan_psl23_z", buckets.NonEuStd); // ř.12 třetí země, základní sazba
+        AddDiffRow(veta1, "p_sl5_z", "dan_psl5_z", buckets.NonEuRed);   // ř.13 třetí země, snížená sazba
+
+        // ř.43/44 odpočet sčítá EU i třetí zemi podle sazby.
+        var veta4 = new XElement("Veta4");
+        AddDiffRow(veta4, "pln23", "odp_tuz23_nar", buckets.InStd);     // ř.40 odpočet z tuzemských plnění, základní sazba
+        AddDiffRow(veta4, "pln5", "odp_tuz5_nar", buckets.InRed);       // ř.41 odpočet z tuzemských plnění, snížená sazba
+        AddDiffRow(veta4, "nar_zdp23", "od_zdp23", (buckets.StdDeductBase, buckets.StdDeductVat)); // ř.43 odpočet reverse charge, základní sazba
+        AddDiffRow(veta4, "nar_zdp5", "od_zdp5", (buckets.RedDeductBase, buckets.RedDeductVat));   // ř.44 odpočet reverse charge, snížená sazba
+
+        // Souhrny ř.62/63 se odečítají proti podaným součtům, ne po řádcích – kdyby staré podání
+        // mělo plnění na řádku, který už negenerujeme, rozdíl daně musí přesto sedět.
+        var taxDue = buckets.TaxDueWhole - Previous("Veta6", "dan_zocelk");
+        var taxDeduction = buckets.TaxDeductionWhole - Previous("Veta6", "odp_zocelk");
+
+        // Řádky starších verzí, které aktuální logika negeneruje (jinak by v dodatečném přiznání
+        // zůstaly stát v poslední známé dani), se vynulují zápornou hodnotou.
+        var veta2 = new XElement("Veta2");
+        foreach (var ((element, attribute), value) in previous)
+        {
+            if (value == 0 || consumed.Contains((element, attribute)))
+            {
+                continue;
+            }
+
+            var target = element switch
+            {
+                "Veta1" => veta1,
+                "Veta2" => veta2,
+                "Veta4" => veta4,
+                _ => null
+            };
+            target?.Add(A(attribute, -value));
+        }
+
         if (veta1.HasAttributes)
         {
             dph.Add(veta1);
         }
 
-        // ř.43/44 odpočet sčítá EU i třetí zemi podle sazby.
-        var veta4 = new XElement("Veta4");
-        AddRow(veta4, "pln23", "odp_tuz23_nar", b.InStd);   // ř.40 odpočet z tuzemských plnění, základní sazba
-        AddRow(veta4, "pln5", "odp_tuz5_nar", b.InRed);     // ř.41 odpočet z tuzemských plnění, snížená sazba
-        var hasDeduction = veta4.HasAttributes;
-
-        if (b.StdDeductBase != 0 || b.StdDeductVat != 0)
+        if (veta2.HasAttributes)
         {
-            veta4.Add(A("nar_zdp23", b.StdDeductBase), A("od_zdp23", b.StdDeductVat));
-            hasDeduction = true;
+            dph.Add(veta2);
         }
 
-        if (b.RedDeductBase != 0 || b.RedDeductVat != 0)
-        {
-            veta4.Add(A("nar_zdp5", b.RedDeductBase), A("od_zdp5", b.RedDeductVat));
-            hasDeduction = true;
-        }
-
-        if (hasDeduction)
+        if (veta4.HasAttributes)
         {
             // ř.46 „V plné výši“ = součet odpočtů; musí sednout se součtem výše uvedených řádků.
-            veta4.Add(A("odp_sum_nar", b.TaxDeductionWhole));
+            veta4.Add(A("odp_sum_nar", taxDeduction));
             dph.Add(veta4);
         }
 
-        // ř.62/63/64: počítáme ze zaokrouhlených řádků, aby ř.64 = ř.62 - ř.63 přesně sedělo
-        // (EPO si tyto součty přepočítává a jinak by podání odmítlo).
-        dph.Add(new XElement("Veta6",
-            A("dan_zocelk", b.TaxDueWhole),
-            A("odp_zocelk", b.TaxDeductionWhole),
-            A(b.NetTaxWhole >= 0 ? "dano_da" : "dano_no", Math.Abs(b.NetTaxWhole)),
-            A(b.NetTaxWhole >= 0 ? "dano_no" : "dano_da", 0),
-            A("dano", 0)));
+        if (supplementary)
+        {
+            // Dodatečné přiznání: ř.62/63 jsou rozdíly a ř.66 „Rozdíl oproti poslední známé dani“
+            // (kladný i záporný); ř.64/65 se vyplňují jen v řádném/opravném přiznání.
+            dph.Add(new XElement("Veta6",
+                A("dan_zocelk", taxDue),
+                A("odp_zocelk", taxDeduction),
+                A("dano", taxDue - taxDeduction)));
+        }
+        else
+        {
+            // ř.62/63/64: počítáme ze zaokrouhlených řádků, aby ř.64 = ř.62 - ř.63 přesně sedělo
+            // (EPO si tyto součty přepočítává a jinak by podání odmítlo).
+            dph.Add(new XElement("Veta6",
+                A("dan_zocelk", buckets.TaxDueWhole),
+                A("odp_zocelk", buckets.TaxDeductionWhole),
+                A(buckets.NetTaxWhole >= 0 ? "dano_da" : "dano_no", Math.Abs(buckets.NetTaxWhole)),
+                A(buckets.NetTaxWhole >= 0 ? "dano_no" : "dano_da", 0),
+                A("dano", 0)));
+        }
 
         return Wrap(dph);
+    }
+
+    // Hodnoty vykázané v dříve podaných přiznáních: naposledy podané řádné/opravné plus rozdíly
+    // z případných pozdějších dodatečných = poslední známá daň po jednotlivých polích XML.
+    private static Dictionary<(string Element, string Attribute), long> SumReportedValues(IReadOnlyCollection<XDocument> returns)
+    {
+        var result = new Dictionary<(string, string), long>();
+        foreach (var document in returns)
+        {
+            foreach (var element in document.Descendants())
+            {
+                var name = element.Name.LocalName;
+                if (name is not ("Veta1" or "Veta2" or "Veta4" or "Veta6"))
+                {
+                    continue;
+                }
+
+                foreach (var attribute in element.Attributes())
+                {
+                    // ř.64/65 (dano_da/dano_no) a ř.66 (dano) nejsou vykázaná plnění, ale výsledek;
+                    // odp_sum_nar (ř.46) je jen kontrolní součet ř.43/44 – rozdíl se počítá z nich.
+                    if (name == "Veta6" && attribute.Name.LocalName is not ("dan_zocelk" or "odp_zocelk")
+                        || attribute.Name.LocalName == "odp_sum_nar")
+                    {
+                        continue;
+                    }
+
+                    if (long.TryParse(attribute.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+                    {
+                        var key = (name, attribute.Name.LocalName);
+                        result[key] = result.GetValueOrDefault(key) + value;
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     // Vlastní daňová povinnost v celých korunách (ř.64 přiznání): > 0 = doplatek, < 0 = nadměrný
@@ -334,26 +430,51 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
             : ("", "");
     }
 
-    private XElement VatReturnHeader(TaxSubject subject, VatPeriod period, string formType) => new("VetaD",
-        A("dokument", "DP3"),
-        A("k_uladis", "DPH"),
-        A("dapdph_forma", formType),
-        A("mesic", period.Month.ToString("D2", CultureInfo.InvariantCulture)),
-        A("rok", period.Year),
-        A("d_poddp", Date(period.SubmissionDate)),
-        A("typ_platce", "P"),
-        A("c_okec", subject.ActivityCode));
+    private XElement VatReturnHeader(TaxSubject subject, VatPeriod period, string formType)
+    {
+        var element = new XElement("VetaD",
+            A("dokument", "DP3"),
+            A("k_uladis", "DPH"),
+            A("dapdph_forma", formType),
+            A("mesic", period.Month.ToString("D2", CultureInfo.InvariantCulture)),
+            A("rok", period.Year),
+            A("d_poddp", Date(period.SubmissionDate)),
+            A("typ_platce", "P"),
+            A("c_okec", subject.ActivityCode));
 
-    private XElement ControlStatementHeader(VatPeriod period, string formType) => new("VetaD",
-        A("dokument", "KH1"),
-        A("k_uladis", "DPH"),
-        A("khdph_forma", formType),
-        A("mesic", period.Month),
-        A("rok", period.Year),
-        A("d_poddp", Date(period.SubmissionDate)));
+        // Dodatečné přiznání musí uvést den zjištění důvodů pro jeho podání (§141 odst. 1 DŘ).
+        if (formType is "D" or "E")
+        {
+            element.Add(A("d_zjist", Date(period.SubmissionDate)));
+        }
+
+        return element;
+    }
+
+    private XElement ControlStatementHeader(VatPeriod period, string formType)
+    {
+        var element = new XElement("VetaD",
+            A("dokument", "KH1"),
+            A("k_uladis", "DPH"),
+            A("khdph_forma", formType),
+            A("mesic", period.Month),
+            A("rok", period.Year),
+            A("d_poddp", Date(period.SubmissionDate)));
+
+        // Následné KH musí uvést den zjištění důvodů pro jeho podání (§101f odst. 2 ZDPH).
+        if (formType is "N" or "E")
+        {
+            element.Add(A("d_zjist", Date(period.SubmissionDate)));
+        }
+
+        return element;
+    }
 
     private XElement TaxSubjectElement(TaxSubject subject, bool includeDataBox = false)
     {
+        // „ulice“ musí odpovídat registračním údajům u FÚ, jinak EPO hlásí kód 116. Obec bez
+        // uliční sítě (adresa jen „obec + č.p.“) má v registraci ulici prázdnou – pak má být
+        // prázdné i pole Ulice v nastavení subjektu; exportér data záměrně nijak neupravuje.
         var element = new XElement("VetaP",
             A("dic", StripCz(subject.Dic)),
             A("jmeno", subject.FirstName),

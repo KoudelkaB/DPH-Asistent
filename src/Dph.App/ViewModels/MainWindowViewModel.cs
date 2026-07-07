@@ -73,8 +73,8 @@ public partial class MainWindowViewModel : ViewModelBase
         _ => Task.FromResult<string?>(null);
     public Func<string, string, Task<bool>> ConfirmAsync { get; set; } =
         (_, _) => Task.FromResult(true);
-    public Func<string, string, Task<ReexportChoice>> ConfirmReexportAsync { get; set; } =
-        (_, _) => Task.FromResult(ReexportChoice.Regular);
+    public Func<string, string, string, Task<ReexportChoice>> ConfirmReexportAsync { get; set; } =
+        (_, _, _) => Task.FromResult(ReexportChoice.Regular);
     public Func<string, Task> CopyToClipboardAsync { get; set; } = _ => Task.CompletedTask;
 
     public string[] CounterpartyRoleOptions { get; } =
@@ -1559,13 +1559,20 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         // Už podané období (importované nebo exportované): zeptej se, zda jde o řádné (přepíše
-        // stávající XML) nebo opravné přiznání (nové XML s vlastním názvem a příznakem „opravné“).
+        // stávající XML), nebo o opravu. Do lhůty pro podání je oprava „opravné“ přiznání/KH
+        // (forma O); po lhůtě už opravné podat nelze – generuje se dodatečné přiznání (forma D,
+        // rozdílově dle §141 DŘ) a následné kontrolní hlášení (forma N, kompletní znovu-podání).
         var corrective = false;
+        var afterDeadline = FilingDeadline.IsAfterDeadline(SelectedPeriod, DateOnly.FromDateTime(DateTime.Today));
         if (SelectedPeriod.IsLockedByHistory)
         {
+            var message = afterDeadline
+                ? $"Období {SelectedPeriod.Label} už je vedené jako podané a lhůta pro podání ({FilingDeadline.For(SelectedPeriod.Year, SelectedPeriod.Month):dd.MM.yyyy}) uplynula. Řádné přiznání přepíše stávající XML (pokud existuje); oprava se vygeneruje jako dodatečné přiznání (rozdíly oproti poslednímu podání) a následné kontrolní hlášení."
+                : $"Období {SelectedPeriod.Label} už je vedené jako podané. Řádné přiznání přepíše stávající XML (pokud existuje), opravné vytvoří nové soubory s příznakem opravného přiznání.";
             var choice = await ConfirmReexportAsync(
                 "Opakovaný export období",
-                $"Období {SelectedPeriod.Label} už je vedené jako podané. Řádné přiznání přepíše stávající XML (pokud existuje), opravné vytvoří nové soubory s příznakem opravného přiznání.");
+                message,
+                afterDeadline ? "Dodatečné DP + následné KH" : "Opravné přiznání");
             switch (choice)
             {
                 case ReexportChoice.Cancel:
@@ -1574,6 +1581,18 @@ public partial class MainWindowViewModel : ViewModelBase
                 case ReexportChoice.Corrective:
                     corrective = true;
                     break;
+            }
+        }
+
+        // Poslední známá daň pro rozdílové dodatečné přiznání; bez ní dodatečné vygenerovat nejde.
+        System.Xml.Linq.XDocument[]? lastKnownReturns = null;
+        if (corrective && afterDeadline)
+        {
+            lastKnownReturns = LoadLastKnownVatReturns(SelectedPeriod, selectedDirectory);
+            if (lastKnownReturns is null)
+            {
+                StatusMessage = "Dodatečné přiznání nelze sestavit: nenašel se XML soubor naposledy podaného přiznání (DPHDP) pro toto období.";
+                return;
             }
         }
 
@@ -1595,14 +1614,31 @@ public partial class MainWindowViewModel : ViewModelBase
         var invoices = Invoices.Select(x => x.ToDomain()).ToArray();
         var prefix = $"{SelectedPeriod.Year:D4}-{SelectedPeriod.Month:D2}";
 
-        // dapdph_forma/khdph_forma: B = řádné, O = opravné (nahrazuje dosud nepodané přiznání).
-        var formType = corrective ? "O" : "B";
-        var suffix = corrective ? NextCorrectiveSuffix(prefix) : "podani";
-        var vatReturnPath = Path.Combine(ExportDirectory, $"{prefix}_DPHDP_{suffix}.xml");
-        var controlStatementPath = Path.Combine(ExportDirectory, $"{prefix}_DPHKH_{suffix}.xml");
+        // dapdph_forma: B = řádné, O = opravné (do lhůty), D = dodatečné (po lhůtě, rozdílově).
+        // khdph_forma: B = řádné, O = opravné (do lhůty), N = následné (po lhůtě, kompletní).
+        var supplementary = corrective && afterDeadline;
+        var vatReturnForm = corrective ? (supplementary ? "D" : "O") : "B";
+        var controlStatementForm = corrective ? (supplementary ? "N" : "O") : "B";
+        // Přípony podle úředního názvu dokumentu: dodatečné přiznání, ale následné kontrolní hlášení.
+        var (vatReturnSuffix, controlStatementSuffix) = corrective
+            ? NextCorrectiveSuffixes(prefix, supplementary ? "dodatecne" : "opravne", supplementary ? "nasledne" : "opravne")
+            : ("podani", "podani");
+        var vatReturnPath = Path.Combine(ExportDirectory, $"{prefix}_DPHDP_{vatReturnSuffix}.xml");
+        var controlStatementPath = Path.Combine(ExportDirectory, $"{prefix}_DPHKH_{controlStatementSuffix}.xml");
 
-        _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices, formType).Save(vatReturnPath);
-        _exporter.ExportControlStatement(TaxSubject, SelectedPeriod, invoices, formType).Save(controlStatementPath);
+        var vatReturn = _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices, vatReturnForm, lastKnownReturns);
+        // Dodatečné přiznání beze změn (rozdíly jen v KH, např. evidenční číslo dokladu) se
+        // nepodává – vygeneruje se pak jen následné kontrolní hlášení.
+        var skipEmptySupplementary = supplementary
+            && !vatReturn.Descendants("Veta1").Any()
+            && !vatReturn.Descendants("Veta2").Any()
+            && !vatReturn.Descendants("Veta4").Any();
+        if (!skipEmptySupplementary)
+        {
+            vatReturn.Save(vatReturnPath);
+        }
+
+        _exporter.ExportControlStatement(TaxSubject, SelectedPeriod, invoices, controlStatementForm).Save(controlStatementPath);
         var exportedAt = DateTimeOffset.UtcNow;
         await _repository.MarkPeriodExportedAsync(SelectedPeriod.Id, exportedAt);
         SelectedPeriod.ExportedAt = exportedAt;
@@ -1610,23 +1646,96 @@ public partial class MainWindowViewModel : ViewModelBase
         _confirmedProtectedPeriodIds.Remove(SelectedPeriod.Id); // po podání ať se případná další úprava znovu potvrdí
         RaisePeriodEditabilityChanged(); // období se znovu zamklo → obnovit read-only stav gridu
         Issuing.RefreshVatPeriodStates();
-        var kindLabel = corrective ? "Opravné" : "Řádné";
-        StatusMessage = $"{kindLabel} přiznání: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
+        StatusMessage = skipEmptySupplementary
+            ? $"Přiznání beze změn (dodatečné se nepodává) – jen následné KH: {Path.GetFileName(controlStatementPath)} do {ExportDirectory}"
+            : supplementary
+                ? $"Dodatečné přiznání a následné KH: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}"
+                : $"{(corrective ? "Opravné" : "Řádné")} přiznání: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
     }
 
-    // Opravné přiznání nesmí přepsat řádné ani předchozí opravné – najdeme první volný název.
-    private string NextCorrectiveSuffix(string prefix)
+    // Oprava nesmí přepsat řádné podání ani předchozí opravy – najdeme první volné číslo společné
+    // pro oba soubory (DP a KH mají po lhůtě různé přípony: dodatecne vs. nasledne).
+    private (string VatReturnSuffix, string ControlStatementSuffix) NextCorrectiveSuffixes(string prefix, string vatReturnKind, string controlStatementKind)
     {
         for (var index = 1; ; index++)
         {
-            var suffix = index == 1 ? "opravne" : $"opravne_{index}";
-            var vatReturn = Path.Combine(ExportDirectory, $"{prefix}_DPHDP_{suffix}.xml");
-            var controlStatement = Path.Combine(ExportDirectory, $"{prefix}_DPHKH_{suffix}.xml");
+            var vatReturnSuffix = index == 1 ? vatReturnKind : $"{vatReturnKind}_{index}";
+            var controlStatementSuffix = index == 1 ? controlStatementKind : $"{controlStatementKind}_{index}";
+            var vatReturn = Path.Combine(ExportDirectory, $"{prefix}_DPHDP_{vatReturnSuffix}.xml");
+            var controlStatement = Path.Combine(ExportDirectory, $"{prefix}_DPHKH_{controlStatementSuffix}.xml");
             if (!File.Exists(vatReturn) && !File.Exists(controlStatement))
             {
-                return suffix;
+                return (vatReturnSuffix, controlStatementSuffix);
             }
         }
+    }
+
+    // Poslední známá daň (§141 DŘ) = hodnoty skutečně vykázané v naposledy podaném přiznání.
+    // Základem je nejnovější řádné/opravné DP XML (z exportní nebo importní složky) a k němu
+    // všechna novější dodatečná DP (jejich rozdíly se v exportéru přičtou). Soubory ve složkách
+    // se považují za podané – nepodané vygenerované XML je potřeba smazat.
+    private System.Xml.Linq.XDocument[]? LoadLastKnownVatReturns(VatPeriod period, string exportDirectory)
+    {
+        var prefix = $"{period.Year:D4}-{period.Month:D2}";
+        var candidates = new List<string>();
+        if (Directory.Exists(exportDirectory))
+        {
+            candidates.AddRange(Directory.EnumerateFiles(exportDirectory, $"{prefix}_DPHDP_*.xml"));
+        }
+
+        if (Directory.Exists(ImportDirectory))
+        {
+            candidates.AddRange(Directory.EnumerateFiles(ImportDirectory, "*.xml", SearchOption.AllDirectories));
+        }
+
+        var returns = new List<(DateTime WriteTime, string FormType, System.Xml.Linq.XDocument Document)>();
+        foreach (var file in candidates.Distinct())
+        {
+            try
+            {
+                var document = System.Xml.Linq.XDocument.Load(file);
+                var form = document.Root?.Elements().FirstOrDefault();
+                var header = form?.Element("VetaD");
+                if (form?.Name.LocalName != "DPHDP3"
+                    || header?.Attribute("rok")?.Value.Trim() != period.Year.ToString(CultureInfo.InvariantCulture)
+                    || !int.TryParse(header.Attribute("mesic")?.Value, out var month)
+                    || month != period.Month)
+                {
+                    continue;
+                }
+
+                var formType = header.Attribute("dapdph_forma")?.Value.Trim().ToUpperInvariant() ?? "B";
+                returns.Add((File.GetLastWriteTimeUtc(file), formType, document));
+            }
+            catch
+            {
+                // cizí nebo poškozený soubor – přeskočit
+            }
+        }
+
+        var ordered = returns.OrderBy(x => x.WriteTime).ToArray();
+        var baseIndex = Array.FindLastIndex(ordered, x => x.FormType is "B" or "O");
+        if (baseIndex < 0)
+        {
+            return null;
+        }
+
+        var result = new List<System.Xml.Linq.XDocument> { ordered[baseIndex].Document };
+        foreach (var item in ordered[(baseIndex + 1)..])
+        {
+            // Opravné dodatečné (E) nahrazuje naposledy podané dodatečné, nepřičítá se k němu.
+            if (item.FormType == "E" && result.Count > 1)
+            {
+                result.RemoveAt(result.Count - 1);
+            }
+
+            if (item.FormType is "D" or "E")
+            {
+                result.Add(item.Document);
+            }
+        }
+
+        return [.. result];
     }
 
     [RelayCommand]

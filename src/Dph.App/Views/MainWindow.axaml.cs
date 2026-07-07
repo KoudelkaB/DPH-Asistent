@@ -198,13 +198,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<ReexportChoice> ConfirmReexportAsync(string title, string message)
+    private async Task<ReexportChoice> ConfirmReexportAsync(string title, string message, string correctiveLabel)
     {
         var cancelButton = new Button { Content = "Zrušit", MinWidth = 92 };
         var regularButton = new Button { Content = "Řádné přiznání", MinWidth = 130 };
         var correctiveButton = new Button
         {
-            Content = "Opravné přiznání",
+            Content = correctiveLabel,
             MinWidth = 140,
             Background = Brushes.Black,
             Foreground = Brushes.White
@@ -238,9 +238,9 @@ public partial class MainWindow : Window
         {
             Title = title,
             Width = 520,
-            Height = 190,
+            Height = 230,
             MinWidth = 500,
-            MinHeight = 180,
+            MinHeight = 200,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
             Content = content

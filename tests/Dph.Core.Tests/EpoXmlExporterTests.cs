@@ -483,6 +483,230 @@ public sealed class EpoXmlExporterTests
         Assert.Equal("1890", veta6.Attribute("dano_da")?.Value);
     }
 
+    [Fact]
+    public void Supplementary_Return_Reports_Only_Differences_And_Row_66()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        // Beze změny oproti poslednímu podání – v dodatečném přiznání se nesmí objevit.
+        var unchangedReceived = new InvoiceLine
+        {
+            Kind = InvoiceKind.ReceivedDomesticWithVat,
+            EvidenceNumber = "IN-1",
+            CounterpartyDic = "CZ27082440",
+            TaxableSupplyDate = new DateOnly(2026, 5, 12),
+            TaxBaseCzk = 1_000m,
+            VatCzk = 210m
+        };
+        var lastKnown = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 100_000m,
+                VatCzk = 21_000m
+            },
+            unchangedReceived
+        };
+        var current = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 127_449m,
+                VatCzk = 26_764.29m
+            },
+            unchangedReceived
+        };
+
+        // Poslední známá daň = hodnoty skutečně vykázané v naposledy podaném (řádném) přiznání.
+        var lastKnownReturn = exporter.ExportVatReturn(Subject(), period, lastKnown);
+        var dph = exporter.ExportVatReturn(Subject(), period, current, "D", [lastKnownReturn]);
+
+        var vetaD = dph.Descendants("VetaD").Single();
+        Assert.Equal("D", vetaD.Attribute("dapdph_forma")?.Value);
+        Assert.Equal("03.07.2026", vetaD.Attribute("d_zjist")?.Value);
+
+        // ř.1 jen rozdíl základu a daně; nezměněný odpočet (ř.40) se vůbec nevykazuje.
+        var veta1 = dph.Descendants("Veta1").Single();
+        Assert.Equal("27449", veta1.Attribute("obrat23")?.Value);
+        Assert.Equal("5764", veta1.Attribute("dan23")?.Value);
+        Assert.Empty(dph.Descendants("Veta4"));
+
+        // ř.62/63 rozdíly, ř.66 = rozdíl oproti poslední známé dani; ř.64/65 se nevyplňují.
+        var veta6 = dph.Descendants("Veta6").Single();
+        Assert.Equal("5764", veta6.Attribute("dan_zocelk")?.Value);
+        Assert.Equal("0", veta6.Attribute("odp_zocelk")?.Value);
+        Assert.Equal("5764", veta6.Attribute("dano")?.Value);
+        Assert.Null(veta6.Attribute("dano_da"));
+        Assert.Null(veta6.Attribute("dano_no"));
+    }
+
+    [Fact]
+    public void Supplementary_Return_For_Lower_Tax_Reports_Negative_Difference()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var lastKnown = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 10_000m,
+                VatCzk = 2_100m
+            }
+        };
+        var current = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 8_000m,
+                VatCzk = 1_680m
+            }
+        };
+
+        var lastKnownReturn = exporter.ExportVatReturn(Subject(), period, lastKnown);
+        var veta6 = exporter.ExportVatReturn(Subject(), period, current, "D", [lastKnownReturn])
+            .Descendants("Veta6").Single();
+        Assert.Equal("-420", veta6.Attribute("dan_zocelk")?.Value);
+        Assert.Equal("-420", veta6.Attribute("dano")?.Value);
+    }
+
+    [Fact]
+    public void Supplementary_Return_With_Unchanged_Invoices_Is_All_Zero()
+    {
+        // Reprodukce hlášeného problému: dodatečné přiznání beze změny plnění (vč. reverse charge)
+        // musí vykázat samé nuly, ne rozdíl 130 = 87+43. Rozdíl se počítá proti hodnotám skutečně
+        // vykázaným v podaném DP, ne proti rekonstrukci z aktuální logiky.
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var invoices = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge, EvidenceNumber = "IE-1", CounterpartyDic = "IE4143435AH",
+                TaxableSupplyDate = new DateOnly(2026, 5, 25), TaxBaseCzk = 412.40m, VatCzk = 86.60m
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.ReverseCharge, EvidenceNumber = "US-1",
+                TaxableSupplyDate = new DateOnly(2026, 5, 12), TaxBaseCzk = 207.14m, VatCzk = 43.50m
+            },
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic, EvidenceNumber = "20260005", CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31), TaxBaseCzk = 127_449m, VatCzk = 26_764.29m
+            }
+        };
+
+        var lastKnownReturn = exporter.ExportVatReturn(Subject(), period, invoices);
+        var dph = exporter.ExportVatReturn(Subject(), period, invoices, "D", [lastKnownReturn]);
+
+        // Žádný řádek plnění/odpočtu se nevykazuje – všechny rozdíly jsou nulové.
+        Assert.Empty(dph.Descendants("Veta1"));
+        Assert.Empty(dph.Descendants("Veta2"));
+        Assert.Empty(dph.Descendants("Veta4"));
+        var veta6 = dph.Descendants("Veta6").Single();
+        Assert.Equal("0", veta6.Attribute("dan_zocelk")?.Value);
+        Assert.Equal("0", veta6.Attribute("odp_zocelk")?.Value);
+        Assert.Equal("0", veta6.Attribute("dano")?.Value);
+    }
+
+    [Fact]
+    public void Supplementary_Return_Adds_Differences_From_Earlier_Supplementary()
+    {
+        // Poslední známá daň = řádné + již podané dodatečné. Druhé dodatečné počítá rozdíl proti
+        // jejich součtu, takže dva po sobě jdoucí přírůstky +1000 skončí u správné hodnoty.
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        InvoiceLine Issued(decimal baseCzk) => new()
+        {
+            Kind = InvoiceKind.IssuedDomestic, EvidenceNumber = "F1", CounterpartyDic = "CZ61506133",
+            TaxableSupplyDate = new DateOnly(2026, 5, 31), TaxBaseCzk = baseCzk, VatCzk = baseCzk * 0.21m
+        };
+
+        var regular = exporter.ExportVatReturn(Subject(), period, [Issued(10_000m)]);
+        var firstSupplementary = exporter.ExportVatReturn(Subject(), period, [Issued(11_000m)], "D", [regular]);
+        var secondSupplementary = exporter.ExportVatReturn(Subject(), period, [Issued(12_000m)], "D", [regular, firstSupplementary]);
+
+        // První dodatečné: rozdíl +1000 základ / +210 daň.
+        Assert.Equal("1000", firstSupplementary.Descendants("Veta1").Single().Attribute("obrat23")?.Value);
+        // Druhé dodatečné: rozdíl proti 11 000 (řádné 10 000 + dodatečné +1 000), tedy zase jen +1000.
+        Assert.Equal("1000", secondSupplementary.Descendants("Veta1").Single().Attribute("obrat23")?.Value);
+        Assert.Equal("210", secondSupplementary.Descendants("Veta6").Single().Attribute("dano")?.Value);
+    }
+
+    [Fact]
+    public void Supplementary_Return_Requires_Last_Known_State()
+    {
+        var exporter = new EpoXmlExporter();
+        Assert.Throws<ArgumentException>(() =>
+            exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 5 }, [], "D"));
+    }
+
+    [Fact]
+    public void Follow_Up_Control_Statement_Has_Discovery_Date_And_Full_Data()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var kh = exporter.ExportControlStatement(Subject(), period, new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                CounterpartyDic = "CZ61506133",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 127_449m,
+                VatCzk = 26_764.29m
+            }
+        }, "N");
+
+        var vetaD = kh.Descendants("VetaD").Single();
+        Assert.Equal("N", vetaD.Attribute("khdph_forma")?.Value);
+        Assert.Equal("03.07.2026", vetaD.Attribute("d_zjist")?.Value);
+        // Následné KH nese kompletní data, ne rozdíly.
+        Assert.Equal("127449", kh.Descendants("VetaA4").Single().Attribute("zakl_dane1")?.Value);
+    }
+
+    [Fact]
+    public void Regular_Forms_Do_Not_Carry_Discovery_Date()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 6, 20) };
+
+        Assert.Null(exporter.ExportVatReturn(Subject(), period, []).Descendants("VetaD").Single().Attribute("d_zjist"));
+        Assert.Null(exporter.ExportControlStatement(Subject(), period, [], "O").Descendants("VetaD").Single().Attribute("d_zjist"));
+    }
+
+    [Fact]
+    public void Empty_Street_Is_Exported_As_Empty_Attribute()
+    {
+        // Obec bez uliční sítě (např. Jíkev 205) má v registraci u FÚ ulici prázdnou; prázdné
+        // pole Ulice se exportuje jako prázdný atribut a EPO ho bere jako nevyplněné (kód 116
+        // by naopak hlásilo odeslání názvu obce v poli ulice).
+        var exporter = new EpoXmlExporter();
+        var subject = Subject();
+        subject.Street = "";
+        subject.City = "Jíkev";
+
+        var vetaP = exporter.ExportVatReturn(subject, new VatPeriod { Year = 2026, Month = 5 }, [])
+            .Descendants("VetaP").Single();
+        Assert.Equal("", vetaP.Attribute("ulice")?.Value);
+        Assert.Equal("Jíkev", vetaP.Attribute("naz_obce")?.Value);
+    }
+
     private static TaxSubject Subject() => new()
     {
         Dic = "7503012671",
