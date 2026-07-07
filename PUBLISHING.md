@@ -27,8 +27,11 @@ App ID / identifikátory:
 
 ## 1. Vydání nové verze (GitHub Release)
 
-Verze je řízena tagem. Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml)
-se spustí po pushnutí tagu `vX.Y.Z` a sestaví:
+Verzi generuje [MinVer](https://github.com/adamralph/minver) z git tagu `vX.Y.Z` – nikde se
+neudržuje ručně (Directory.Build.props už žádné `<Version>` nemá). Netagovaný commit dostane
+prerelease odvozenou z posledního tagu (např. `0.1.1-alpha.0.8`). Workflow
+[`.github/workflows/release.yml`](.github/workflows/release.yml) se spustí po pushnutí tagu
+`vX.Y.Z` a sestaví:
 
 - Windows Inno Setup instalátor (`DphAsistent-Setup-X.Y.Z.exe`),
 - Windows přenosný zip,
@@ -39,17 +42,16 @@ se spustí po pushnutí tagu `vX.Y.Z` a sestaví:
 a vytvoří **draft** GitHub Release s těmito artefakty.
 
 ```bash
-# 1) Sjednoťte verzi (Directory.Build.props -> <Version>) a commitněte.
-# 2) Vytvořte a pushněte tag:
+# 1) Vytvořte a pushněte tag – verzi z něj odvodí MinVer:
 git tag v0.1.0
 git push origin v0.1.0
-# 3) Počkejte na workflow, zkontrolujte draft Release na GitHubu a publikujte ho.
+# 2) Počkejte na workflow, zkontrolujte draft Release na GitHubu a publikujte ho.
 ```
 
 Ruční zkušební build bez tagu: GitHub → Actions → *Release* → *Run workflow*
 (artefakty se nahrají, Release se nevytvoří).
 
-Verzi lze do buildu předat i lokálně přes `-p:Version=0.1.0`.
+Verzi lze pro jednorázový build vynutit lokálně přes `-p:Version=0.1.0` (MinVer se pak přeskočí).
 
 ---
 

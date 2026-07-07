@@ -18,13 +18,15 @@ Sestavení balíčků a publikace na Flathub/Winget jsou popsané v [PUBLISHING.
 - Evidence poplatníka včetně DIČ, IČO, adresy, e-mailu, telefonu, datové schránky, finančního úřadu, územního pracoviště a bankovního účtu.
 - Doplnění údajů poplatníka a subjektů z ARES.
 - Načítání seznamu finančních úřadů a územních pracovišť.
-- Evidence vydaných, přijatých a reverse-charge dokladů.
+- Evidence vydaných a přijatých dokladů; u přijatých se tuzemský režim vs. reverse charge
+  (přijetí služby ze zahraničí) rozpozná automaticky z DIČ dodavatele.
 - Automatický výpočet základu, DPH a částky s DPH podle sazby.
 - Podpora sazeb DPH 21 %, 12 % a 0 %.
 - Podpora cizí měny a dopočtu základu v CZK kurzem ČNB podle DUZP.
 - Adresář odběratelů a dodavatelů s vazbou na doklady.
 - Automatické ukládání řádků dokladů během práce.
-- Kontrola a potvrzení změn v již importovaném nebo exportovaném období.
+- Uzamčení již podaného (importovaného/exportovaného) období s potvrzením před další úpravou.
+- Rozlišení řádného, opravného a – po lhůtě – dodatečného přiznání a následného kontrolního hlášení.
 - Záloha a obnova lokální databáze.
 
 ## Přiznání k DPH a kontrolní hlášení
@@ -36,13 +38,18 @@ Aplikace z evidovaných řádků generuje dvě XML dávky pro EPO:
 
 Export pracuje s těmito typy řádků:
 
-- **Vydaná tuzemská plnění**: výstupní daň, řádky 1/2 přiznání, kontrolní hlášení A4/A5.
-- **Přijatá tuzemská plnění s českou DPH**: odpočet, řádky 40/41 přiznání, kontrolní hlášení B2/B3.
-- **Reverse charge pro zahraniční služby**: přijetí služby od osoby neusazené v tuzemsku. EU dodavatelé se exportují do řádků 5/6, dodavatelé ze třetích zemí do řádků 12/13, odpočet do řádků 43/44.
+- **Vydaná tuzemská plnění**: výstupní daň, řádky 1/2 přiznání, kontrolní hlášení A.4/A.5.
+- **Přijatá tuzemská plnění s českou DPH**: odpočet, řádky 40/41 přiznání, kontrolní hlášení B.2/B.3.
+- **Reverse charge pro zahraniční služby**: přijetí služby od osoby neusazené v tuzemsku. Dodavatelé registrovaní v jiném členském státě EU se exportují do řádků 5/6, dodavatelé ze třetích zemí do řádků 12/13, odpočet u obojího do řádků 43/44. V kontrolním hlášení se vykazují v oddílu A.2 (EU dodavatel s rozděleným VAT ID, třetí země s prázdnou identifikací).
 
-Kontrolní hlášení zahrnuje tuzemská vydaná a přijatá plnění. Reverse-charge řádky se do kontrolního hlášení negenerují; při exportu aplikace na tuto skutečnost upozorní.
+O zařazení přijatého dokladu (tuzemský odpočet vs. reverse charge, EU vs. třetí země) rozhoduje aplikace sama podle prefixu DIČ dodavatele – uživatel v UI volí jen Vydaná/Přijatá. Nejde o tuzemský režim přenesení daňové povinnosti podle §92a (ř. 10/11, KH B.1), ten aplikace nemodeluje.
 
-U opakovaného exportu již podaného období se aplikace ptá, zda vytvořit řádné nebo opravné podání. Opravné exporty dostávají samostatný název souboru, aby nepřepsaly předchozí XML.
+Při opakovaném exportu již podaného období se aplikace řídí lhůtou pro podání (25. den následujícího měsíce, posunutý na nejbližší pracovní den):
+
+- **Do lhůty** nabídne řádné (přepíše stávající XML), nebo **opravné** přiznání a kontrolní hlášení (forma „O“).
+- **Po lhůtě** vygeneruje **dodatečné přiznání** (forma „D“, jen rozdíly oproti poslední známé dani na ř. 66, s datem zjištění) a **následné kontrolní hlášení** (forma „N“, kompletní data). Rozdíly se počítají proti hodnotám skutečně vykázaným v naposledy podaném XML; beze změny plnění se dodatečné přiznání nepodává a vznikne jen následné kontrolní hlášení.
+
+Opravné, dodatečné i následné exporty dostávají samostatný název souboru, aby nepřepsaly předchozí podání.
 
 ## Vydané faktury
 
@@ -111,6 +118,8 @@ Spuštění testů:
 ```bash
 dotnet test tests/Dph.Core.Tests/Dph.Core.Tests.csproj
 ```
+
+Verze aplikace se neudržuje ručně – generuje ji [MinVer](https://github.com/adamralph/minver) z git tagů `vX.Y.Z`. Postup vydání je v [PUBLISHING.md](PUBLISHING.md).
 
 ## Struktura projektu
 

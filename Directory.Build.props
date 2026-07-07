@@ -1,8 +1,8 @@
 <Project>
-  <!-- Sdílená metadata a verze pro celé řešení.
-       Verzi lze při buildu přeps: dotnet build -p:Version=1.2.3 -->
+  <!-- Sdílená metadata pro celé řešení. Verzi generuje MinVer z git tagů (prefix "v", např.
+       v1.2.3). Bez tagu na aktuálním commitu vznikne prerelease odvozená z posledního tagu.
+       Verzi lze pro jednorázový build přepsat: dotnet build -p:Version=1.2.3 (MinVer se přeskočí). -->
   <PropertyGroup>
-    <Version>0.1.0</Version>
     <Product>DPH Asistent</Product>
     <Authors>Bohdan Koudelka</Authors>
     <Company>Bohdan Koudelka</Company>
@@ -10,5 +10,10 @@
     <Description>Desktopová aplikace pro evidenci podkladů k DPH, kontrolní hlášení a vystavování faktur.</Description>
     <RepositoryUrl>https://github.com/KoudelkaB/DPH-Asistent</RepositoryUrl>
     <PackageProjectUrl>https://github.com/KoudelkaB/DPH-Asistent</PackageProjectUrl>
+    <MinVerTagPrefix>v</MinVerTagPrefix>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MinVer" Version="7.0.0" PrivateAssets="All" />
+  </ItemGroup>
 </Project>

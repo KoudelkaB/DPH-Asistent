@@ -33,13 +33,26 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
+      # Plná historie + tagy jsou nutné, aby MinVer odvodil verzi z git tagu.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
       - id: v
         shell: bash
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VER="${GITHUB_REF#refs/tags/v}"
+          # Ruční zkušební build může verzi zadat vstupem; jinak ji generuje MinVer z git tagu.
+          INPUT="${{ github.event.inputs.version }}"
+          if [[ -n "${INPUT}" && "${INPUT}" != "0.0.0-dev" ]]; then
+            VER="${INPUT}"
           else
-            VER="${{ github.event.inputs.version }}"
+            dotnet tool install --global minver-cli --version 7.0.0
+            export PATH="${PATH}:${HOME}/.dotnet/tools"
+            VER="$(minver --tag-prefix v)"
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "Verze: ${VER}"
@@ -57,9 +70,10 @@ jobs:
       - name: Publish (win-x64, self-contained)
         shell: bash
         run: |
+          # Verzi dodáváme z version jobu; MinVer se pro tento build přeskočí (shallow checkout).
           dotnet publish "${APP_PROJECT}" \
             -c Release -r win-x64 --self-contained true \
-            -p:Version=${{ needs.version.outputs.version }} \
+            -p:Version=${{ needs.version.outputs.version }} -p:MinVerSkip=true \
             -p:PublishSingleFile=false \
             -o publish/win-x64
 
@@ -97,9 +111,10 @@ jobs:
       - name: Publish (linux-x64, self-contained)
         shell: bash
         run: |
+          # Verzi dodáváme z version jobu; MinVer se pro tento build přeskočí (shallow checkout).
           dotnet publish "${APP_PROJECT}" \
             -c Release -r linux-x64 --self-contained true \
-            -p:Version=${{ needs.version.outputs.version }} \
+            -p:Version=${{ needs.version.outputs.version }} -p:MinVerSkip=true \
             -p:PublishSingleFile=false \
             -o publish/linux-x64
 

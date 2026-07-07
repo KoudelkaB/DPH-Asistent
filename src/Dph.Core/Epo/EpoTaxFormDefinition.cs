@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace Dph.Core.Epo;
 
 public sealed class EpoTaxFormDefinition
@@ -10,7 +12,25 @@ public sealed class EpoTaxFormDefinition
     public string ControlStatementVersion { get; init; } = "03.01";
     public decimal ControlStatementDetailLimitCzk { get; init; } = 10_000m;
     public string SoftwareName { get; init; } = "DPH Asistent";
-    public string SoftwareVersion { get; init; } = "0.2.0";
+
+    // verzeSW v EPO XML = verze aplikace z MinVer (git tag). Bereme jen major.minor.patch, ať do
+    // atributu nejde prerelease/build metadata (MinVer u netagovaných buildů přidá „-alpha…“/„+hash“).
+    public string SoftwareVersion { get; init; } = AssemblyVersion();
+
+    private static string AssemblyVersion()
+    {
+        var informational = typeof(EpoTaxFormDefinition).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (string.IsNullOrWhiteSpace(informational))
+        {
+            return "0.0.0";
+        }
+
+        var core = informational.Split('+', '-')[0];
+        return System.Version.TryParse(core, out var version)
+            ? $"{version.Major}.{version.Minor}.{Math.Max(version.Build, 0)}"
+            : "0.0.0";
+    }
 
     // Reverse charge v této aplikaci = přijetí služby ze zahraničí: dodavatel z EU (§9 odst.1) →
     // ř.5/6, ze třetí země (§108) → ř.12/13; odpočet ř.43/44. Není to tuzemský přenos §92a (KH B1);
