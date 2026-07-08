@@ -75,6 +75,8 @@ public partial class MainWindowViewModel : ViewModelBase
         (_, _) => Task.FromResult(true);
     public Func<string, string, string, Task<ReexportChoice>> ConfirmReexportAsync { get; set; } =
         (_, _, _) => Task.FromResult(ReexportChoice.Regular);
+    public Func<string, string, string, Task<string?>> RequestTextAsync { get; set; } =
+        (_, _, _) => Task.FromResult<string?>(null);
     public Func<string, Task> CopyToClipboardAsync { get; set; } = _ => Task.CompletedTask;
 
     public string[] CounterpartyRoleOptions { get; } =
@@ -1633,6 +1635,21 @@ public partial class MainWindowViewModel : ViewModelBase
             && !vatReturn.Descendants("Veta1").Any()
             && !vatReturn.Descendants("Veta2").Any()
             && !vatReturn.Descendants("Veta4").Any();
+        if (supplementary && !skipEmptySupplementary && SupplementaryTaxDifference(vatReturn) <= 0)
+        {
+            var reason = await RequestTextAsync(
+                "Důvod dodatečného přiznání",
+                "Změna daňové povinnosti na ř. 66 je menší nebo rovna nule. Portál vyžaduje důvody pro dodatečné podání.",
+                "Doplnění přijatého plnění a souvisejícího následného kontrolního hlášení.");
+            if (string.IsNullOrWhiteSpace(reason))
+            {
+                StatusMessage = "Export zrušen: pro dodatečné přiznání s ř. 66 ≤ 0 je nutné vyplnit důvod.";
+                return;
+            }
+
+            vatReturn = _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices, vatReturnForm, lastKnownReturns, reason);
+        }
+
         if (!skipEmptySupplementary)
         {
             vatReturn.Save(vatReturnPath);
@@ -1651,6 +1668,14 @@ public partial class MainWindowViewModel : ViewModelBase
             : supplementary
                 ? $"Dodatečné přiznání a následné KH: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}"
                 : $"{(corrective ? "Opravné" : "Řádné")} přiznání: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
+    }
+
+    private static long SupplementaryTaxDifference(System.Xml.Linq.XDocument vatReturn)
+    {
+        var value = vatReturn.Descendants("Veta6").SingleOrDefault()?.Attribute("dano")?.Value;
+        return long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)
+            ? result
+            : 0;
     }
 
     // Oprava nesmí přepsat řádné podání ani předchozí opravy – najdeme první volné číslo společné

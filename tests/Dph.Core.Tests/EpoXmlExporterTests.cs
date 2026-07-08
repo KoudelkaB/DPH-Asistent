@@ -284,9 +284,9 @@ public sealed class EpoXmlExporterTests
     [Fact]
     public void Mixed_Eu_And_Third_Country_Reverse_Charge_Cancels_In_Net_Tax()
     {
-        // Reprodukce hlášené chyby: reverse charge (EU 412,40 + třetí země 208,14) se musí ve
-        // vlastní dani vyrušit. Daň po řádcích: 87 + 44 = 131; odpočet ř.43 musí být také 131,
-        // ne round(sloučený_základ 620 × 0,21) = 130 – jinak dano vyjde o 1 Kč špatně.
+        // Reverse charge musí být pro vlastní daňovou povinnost neutrální. Daň po řádcích je
+        // 87 + 44 = 131 a stejná částka jde na odpočet ř.43, i když EPO pro sloučený základ
+        // 620 dopočte propustnou kontrolní hodnotu 130.
         var exporter = new EpoXmlExporter();
         var dph = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 4 }, new[]
         {
@@ -306,7 +306,6 @@ public sealed class EpoXmlExporterTests
         Assert.Equal("87", veta1.Attribute("dan_psl23_e")?.Value);
         Assert.Equal("44", veta1.Attribute("dan_psl23_z")?.Value);
 
-        // ř.43: základ = 412 + 208, daň = 87 + 44 (součet výstupu), ne round(620 × 0,21) = 130.
         var veta4 = dph.Descendants("Veta4").Single();
         Assert.Equal("620", veta4.Attribute("nar_zdp23")?.Value);
         Assert.Equal("131", veta4.Attribute("od_zdp23")?.Value);
@@ -618,6 +617,98 @@ public sealed class EpoXmlExporterTests
             .Descendants("Veta6").Single();
         Assert.Equal("-420", veta6.Attribute("dan_zocelk")?.Value);
         Assert.Equal("-420", veta6.Attribute("dano")?.Value);
+    }
+
+    [Fact]
+    public void Supplementary_Return_Can_Include_Reason_As_Text_Attachment()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var lastKnown = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 10_000m,
+                VatCzk = 2_100m
+            }
+        };
+        var current = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 8_000m,
+                VatCzk = 1_680m
+            }
+        };
+
+        var lastKnownReturn = exporter.ExportVatReturn(Subject(), period, lastKnown);
+        var dph = exporter.ExportVatReturn(
+            Subject(),
+            period,
+            current,
+            "D",
+            [lastKnownReturn],
+            "Dodatečně zjištěné snížení uskutečněného plnění.");
+
+        var vetaR = dph.Descendants("VetaR").Single();
+        Assert.Equal("1", vetaR.Attribute("poradi")?.Value);
+        Assert.Equal("D", vetaR.Attribute("kod_sekce")?.Value);
+        Assert.Equal(
+            "Dodatečně zjištěné snížení uskutečněného plnění.",
+            vetaR.Attribute("t_prilohy")?.Value);
+        Assert.Empty(dph.Descendants("VetaB"));
+        Assert.Empty(dph.Descendants("textPrilohaO"));
+    }
+
+    [Fact]
+    public void Supplementary_Return_Splits_Long_Reason_To_Seventy_Two_Character_Rows()
+    {
+        var exporter = new EpoXmlExporter();
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var lastKnown = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 10_000m,
+                VatCzk = 2_100m
+            }
+        };
+        var current = new[]
+        {
+            new InvoiceLine
+            {
+                Kind = InvoiceKind.IssuedDomestic,
+                EvidenceNumber = "20260005",
+                TaxableSupplyDate = new DateOnly(2026, 5, 31),
+                TaxBaseCzk = 8_000m,
+                VatCzk = 1_680m
+            }
+        };
+        var reason = "Doplnění reverse charge faktur za služby přijaté ze zahraničí, které byly "
+            + "zjištěny až po lhůtě pro podání řádného přiznání.";
+
+        var lastKnownReturn = exporter.ExportVatReturn(Subject(), period, lastKnown);
+        var dph = exporter.ExportVatReturn(Subject(), period, current, "D", [lastKnownReturn], reason);
+
+        var rows = dph.Descendants("VetaR").ToArray();
+        Assert.True(rows.Length > 1);
+        for (var index = 0; index < rows.Length; index++)
+        {
+            Assert.Equal((index + 1).ToString(), rows[index].Attribute("poradi")?.Value);
+            Assert.Equal("D", rows[index].Attribute("kod_sekce")?.Value);
+            Assert.True(rows[index].Attribute("t_prilohy")?.Value.Length <= 72);
+        }
+
+        Assert.Equal(reason, string.Join(' ', rows.Select(x => x.Attribute("t_prilohy")?.Value)));
     }
 
     [Fact]

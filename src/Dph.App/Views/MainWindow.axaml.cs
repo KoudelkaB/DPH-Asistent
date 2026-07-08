@@ -30,6 +30,7 @@ public partial class MainWindow : Window
             viewModel.PickDatabaseBackupSourceAsync = PickDatabaseBackupSourceAsync;
             viewModel.ConfirmAsync = ConfirmAsync;
             viewModel.ConfirmReexportAsync = ConfirmReexportAsync;
+            viewModel.RequestTextAsync = RequestTextAsync;
             viewModel.CopyToClipboardAsync = CopyToClipboardAsync;
             viewModel.Issuing.PickPdfTargetAsync = PickPdfTargetAsync;
             viewModel.Issuing.ConfirmAsync = ConfirmAsync;
@@ -188,6 +189,68 @@ public partial class MainWindow : Window
         continueButton.Click += (_, _) => dialog.Close(true);
 
         return await dialog.ShowDialog<bool>(this);
+    }
+
+    private async Task<string?> RequestTextAsync(string title, string message, string initialValue)
+    {
+        var textBox = new TextBox
+        {
+            Text = initialValue,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 96
+        };
+        var cancelButton = new Button { Content = "Zrušit", MinWidth = 92 };
+        var continueButton = new Button
+        {
+            Content = "Pokračovat",
+            MinWidth = 110,
+            Background = Brushes.Black,
+            Foreground = Brushes.White
+        };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Children = { cancelButton, continueButton }
+        };
+        Grid.SetRow(buttons, 2);
+
+        var content = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+            Margin = new Thickness(18),
+            RowSpacing = 12,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = message,
+                    TextWrapping = TextWrapping.Wrap
+                },
+                textBox,
+                buttons
+            }
+        };
+        Grid.SetRow(textBox, 1);
+
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 520,
+            Height = 280,
+            MinWidth = 500,
+            MinHeight = 260,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = content
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(null);
+        continueButton.Click += (_, _) => dialog.Close(textBox.Text);
+
+        return await dialog.ShowDialog<string?>(this);
     }
 
     private void OnTaxOfficeDropDownOpened(object? sender, EventArgs e)

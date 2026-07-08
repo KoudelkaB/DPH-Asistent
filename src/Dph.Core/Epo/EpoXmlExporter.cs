@@ -13,7 +13,13 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     // lastKnownReturns: dříve podaná přiznání období – naposledy podané řádné/opravné DP a za ním
     // případná už podaná dodatečná DP (jejich rozdíly se přičtou). Povinné pro dodatečné přiznání
     // (forma D/E), které se dle pokynů k DPHDP3 vyplňuje jen rozdílově oproti poslední známé dani.
-    public XDocument ExportVatReturn(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null, IReadOnlyCollection<XDocument>? lastKnownReturns = null)
+    public XDocument ExportVatReturn(
+        TaxSubject subject,
+        VatPeriod period,
+        IEnumerable<InvoiceLine> invoices,
+        string? formType = null,
+        IReadOnlyCollection<XDocument>? lastKnownReturns = null,
+        string? supplementaryReason = null)
     {
         var resolvedFormType = formType ?? period.FormType;
         var supplementary = resolvedFormType is "D" or "E";
@@ -136,7 +142,50 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
                 A("dano", 0)));
         }
 
+        if (supplementary && !string.IsNullOrWhiteSpace(supplementaryReason))
+        {
+            // EPO ukládá ručně vyplněné důvody dodatečného DPH podání jako text přílohy VetaR
+            // s kódem sekce D. Jeden řádek t_prilohy má v EPO limit 72 znaků.
+            var order = 1;
+            foreach (var line in SplitSupplementaryReason(supplementaryReason))
+            {
+                dph.Add(new XElement("VetaR",
+                    A("poradi", order++),
+                    A("t_prilohy", line),
+                    A("kod_sekce", "D")));
+            }
+        }
+
         return Wrap(dph);
+    }
+
+    private static IEnumerable<string> SplitSupplementaryReason(string reason)
+    {
+        const int maxLineLength = 72;
+        var normalized = string.Join(' ', reason.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        for (var index = 0; index < normalized.Length;)
+        {
+            var remaining = normalized.Length - index;
+            if (remaining <= maxLineLength)
+            {
+                yield return normalized[index..];
+                yield break;
+            }
+
+            var length = maxLineLength;
+            var lastSpace = normalized.LastIndexOf(' ', index + maxLineLength - 1, maxLineLength);
+            if (lastSpace > index)
+            {
+                length = lastSpace - index;
+            }
+
+            yield return normalized.Substring(index, length);
+            index += length;
+            while (index < normalized.Length && normalized[index] == ' ')
+            {
+                index++;
+            }
+        }
     }
 
     // Hodnoty vykázané v dříve podaných přiznáních: naposledy podané řádné/opravné plus rozdíly
@@ -210,10 +259,9 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     {
         public long StdDeductBase => EuStd.Base + NonEuStd.Base;
         public long RedDeductBase => EuRed.Base + NonEuRed.Base;
-        // Odpočet ř.43/44 = daň skutečně přiznaná na výstupu na ř.5/6/12/13, tedy SOUČET daní
-        // jednotlivých řádků – ne round(sečtený_základ × sazba). Kdyby se daň dopočítávala znovu
-        // ze sloučeného základu (412+208=620 → round(130,2)=130), lišila by se o korunu od výstupu
-        // (87+44=131) a reverse charge by se ve vlastní dani nevyrušil (ř.66 by nesedělo o 1 Kč).
+        // Reverse charge má být pro vlastní daňovou povinnost neutrální. Odpočet na ř.43/44 proto
+        // bere stejnou celokorunovou daň, která byla přiznána na výstupu na ř.5/6/12/13, i když
+        // EPO může pro sloučený základ ř.43 hlásit propustnou zaokrouhlovací odchylku.
         public long StdDeductVat => EuStd.Vat + NonEuStd.Vat;
         public long RedDeductVat => EuRed.Vat + NonEuRed.Vat;
         public long TaxDueWhole => OutStd.Vat + OutRed.Vat + EuStd.Vat + EuRed.Vat + NonEuStd.Vat + NonEuRed.Vat;
