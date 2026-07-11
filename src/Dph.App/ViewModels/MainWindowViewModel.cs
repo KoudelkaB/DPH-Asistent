@@ -1291,7 +1291,10 @@ public partial class MainWindowViewModel : ViewModelBase
                 return false;
             }
 
-            var domains = Invoices.Select(PrepareInvoiceForSave).ToArray();
+            // Snímek dvojic VM+doména: kolekce Invoices se může během await vyměnit (přepnutí
+            // období spustí načtení), a uložené hodnoty se nesmí zapsat do cizích řádků.
+            var invoiceViewModels = Invoices.ToArray();
+            var domains = invoiceViewModels.Select(PrepareInvoiceForSave).ToArray();
             var validationMessage = await ValidateInvoiceReferencesAsync(domains);
             if (validationMessage is not null)
             {
@@ -1303,9 +1306,9 @@ public partial class MainWindowViewModel : ViewModelBase
             _isSavingInvoices = true;
             try
             {
-                for (var index = 0; index < Invoices.Count; index++)
+                for (var index = 0; index < invoiceViewModels.Length; index++)
                 {
-                    var invoice = Invoices[index];
+                    var invoice = invoiceViewModels[index];
                     var domain = domains[index];
                     await _repository.SaveInvoiceAsync(domain);
                     ApplySavedDomainToViewModel(invoice, domain);
@@ -1345,7 +1348,8 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         if (SelectedPeriod?.Id == periodId)
         {
-            await LoadInvoicesAsync();
+            // Bez zámku – voláno ze SaveInvoicesCoreAsync, který _saveInvoicesLock už drží.
+            await LoadInvoicesCoreAsync();
         }
 
         _hasPendingInvoiceChanges = false;
@@ -1859,7 +1863,23 @@ public partial class MainWindowViewModel : ViewModelBase
         Issuing.RefreshVatPeriodStates();
     }
 
+    // Načtení sdílí zámek s ukládáním: při přepnutí období běží flush autosave starého období a
+    // načtení nového souběžně a bez serializace by uložení pracovalo s právě vyměněnou kolekcí.
     private async Task LoadInvoicesAsync()
+    {
+        await _saveInvoicesLock.WaitAsync();
+        try
+        {
+            await LoadInvoicesCoreAsync();
+        }
+        finally
+        {
+            _saveInvoicesLock.Release();
+        }
+    }
+
+    // Volat jen s drženým _saveInvoicesLock (SaveInvoicesCoreAsync ho drží při zahazování změn).
+    private async Task LoadInvoicesCoreAsync()
     {
         foreach (var invoice in Invoices)
         {
