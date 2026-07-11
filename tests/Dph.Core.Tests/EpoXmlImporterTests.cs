@@ -59,6 +59,76 @@ public sealed class EpoXmlImporterTests
     }
 
     [Fact]
+    public void Parses_Epo_Dates_Independently_Of_System_Culture()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Pisemnost>
+              <DPHKH1 verzePis="03.01">
+                <VetaD d_poddp="20.06.2026" dokument="KH1" k_uladis="DPH" khdph_forma="B" mesic="5" rok="2026"/>
+                <VetaB2 c_evid_dd="X1" dan1="2100" dic_dod="27082440" dppd="12.05.2026" zakl_dane1="10000" />
+              </DPHKH1>
+            </Pisemnost>
+            """);
+
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        try
+        {
+            var imported = new ImportedEpoData();
+            new EpoXmlImporter().ImportFile(path, imported);
+
+            var period = Assert.Single(imported.Periods);
+            Assert.Equal(new DateOnly(2026, 6, 20), period.Period.SubmissionDate);
+            Assert.Equal(new DateOnly(2026, 5, 12), Assert.Single(period.Invoices).TaxableSupplyDate);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Fact]
+    public void Falls_Back_To_Today_When_Submission_Date_Is_Unreadable()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Pisemnost>
+              <DPHKH1 verzePis="03.01">
+                <VetaD d_poddp="" dokument="KH1" k_uladis="DPH" khdph_forma="B" mesic="5" rok="2026"/>
+              </DPHKH1>
+            </Pisemnost>
+            """);
+
+        var imported = new ImportedEpoData();
+        new EpoXmlImporter().ImportFile(path, imported);
+
+        Assert.Equal(DateOnly.FromDateTime(DateTime.Today), Assert.Single(imported.Periods).Period.SubmissionDate);
+    }
+
+    [Fact]
+    public void Infers_Vat_Rate_From_Negative_Corrective_Amounts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Pisemnost>
+              <DPHKH1 verzePis="03.01">
+                <VetaD d_poddp="20.06.2026" dokument="KH1" k_uladis="DPH" khdph_forma="B" mesic="5" rok="2026"/>
+                <VetaB2 c_evid_dd="DOBROPIS" dan1="-1200" dic_dod="27082440" dppd="12.05.2026" zakl_dane1="-10000" />
+              </DPHKH1>
+            </Pisemnost>
+            """);
+
+        var imported = new ImportedEpoData();
+        new EpoXmlImporter().ImportFile(path, imported);
+
+        Assert.Equal(VatRateKind.Reduced12, Assert.Single(Assert.Single(imported.Periods).Invoices).VatRate);
+    }
+
+    [Fact]
     public void Imports_Second_Rate_Columns_As_Separate_Reduced_Rate_Lines()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");

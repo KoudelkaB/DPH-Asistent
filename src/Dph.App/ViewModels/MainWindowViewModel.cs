@@ -727,26 +727,6 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    // Najde období pro daný měsíc/rok, případně ho založí.
-    private async Task<VatPeriod> EnsurePeriodForAsync(DateOnly date)
-    {
-        var period = Periods.FirstOrDefault(x => x.Year == date.Year && x.Month == date.Month);
-        if (period is null)
-        {
-            period = new VatPeriod
-            {
-                Year = date.Year,
-                Month = date.Month,
-                SubmissionDate = DateOnly.FromDateTime(DateTime.Today),
-                FormType = "B"
-            };
-            await _repository.SavePeriodAsync(period);
-            Periods.Insert(0, period);
-        }
-
-        return period;
-    }
-
     // Vloží do období řádky DPH za jednu vydanou fakturu (jeden řádek na každou sazbu). Vrací počet
     // vložených řádků. Nereloaduje – volající si řízne načtení/označení změny sám.
     private async Task<int> InsertIssuedInvoiceLinesAsync(IssuedInvoice invoice, VatPeriod period)

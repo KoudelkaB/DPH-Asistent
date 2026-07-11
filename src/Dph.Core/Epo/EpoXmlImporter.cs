@@ -124,15 +124,11 @@ public sealed class EpoXmlImporter
             return null;
         }
 
-        var submitted = DateOnly.TryParse(Attr(header, "d_poddp"), out var submissionDate)
-            ? submissionDate
-            : DateOnly.FromDateTime(DateTime.Today);
-
         return new VatPeriod
         {
             Year = year,
             Month = month,
-            SubmissionDate = submissionDate,
+            SubmissionDate = ParseEpoDate(Attr(header, "d_poddp")) ?? DateOnly.FromDateTime(DateTime.Today),
             FormType = EmptyToNull(Attr(header, "khdph_forma")) ?? EmptyToNull(Attr(header, "dapdph_forma")) ?? "B"
         };
     }
@@ -238,12 +234,13 @@ public sealed class EpoXmlImporter
     // in the UI recompute VAT at the right rate instead of defaulting everything to 21 %.
     private static VatRateKind InferVatRate(decimal baseCzk, decimal vatCzk)
     {
-        if (baseCzk <= 0m)
+        if (baseCzk == 0m)
         {
             return VatRateKind.Standard21;
         }
 
-        return (vatCzk / baseCzk) switch
+        // Math.Abs kvůli opravným dokladům (záporný základ i daň) – poměr sazby je stejný.
+        return Math.Abs(vatCzk / baseCzk) switch
         {
             < 0.06m => VatRateKind.Zero0,
             < 0.165m => VatRateKind.Reduced12,
@@ -252,7 +249,14 @@ public sealed class EpoXmlImporter
     }
 
     private static DateOnly ParseDate(string value, VatPeriod period)
-        => DateOnly.TryParse(value, out var parsed) ? parsed : LastDay(period);
+        => ParseEpoDate(value) ?? LastDay(period);
+
+    // EPO zapisuje data ve tvaru "dd.MM.yyyy" – parsování nesmí záviset na jazyku systému.
+    private static DateOnly? ParseEpoDate(string value)
+        => DateOnly.TryParseExact(value, "d.M.yyyy", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var parsed)
+            ? parsed
+            : null;
 
     private static DateOnly LastDay(VatPeriod period)
         => new(period.Year, period.Month, DateTime.DaysInMonth(period.Year, period.Month));

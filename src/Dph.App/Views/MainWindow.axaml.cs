@@ -11,6 +11,7 @@ namespace Dph.App.Views;
 public partial class MainWindow : Window
 {
     private bool _isSyncingCounterpartySelection;
+    private bool _closeSavesCompleted;
 
     public MainWindow()
     {
@@ -357,14 +358,25 @@ public partial class MainWindow : Window
 
     private async void OnClosing(object? sender, WindowClosingEventArgs e)
     {
-        if (DataContext is not MainWindowViewModel viewModel)
+        if (_closeSavesCompleted || DataContext is not MainWindowViewModel viewModel)
         {
             return;
         }
 
-        await viewModel.SaveTaxSubjectAsync();
-        await viewModel.SaveSelectedCounterpartyAsync();
-        await viewModel.Issuing.SaveSelectedInvoiceAsync();
-        await viewModel.SaveWindowSizeAsync(Bounds.Width, Bounds.Height);
+        // Zavření se nejdřív zruší a okno se zavře až po dokončení ukládání – async handler sám
+        // o sobě zavření nepozdrží a rozběhnuté zápisy by ukončení aplikace uřízlo.
+        e.Cancel = true;
+        try
+        {
+            await viewModel.SaveTaxSubjectAsync();
+            await viewModel.SaveSelectedCounterpartyAsync();
+            await viewModel.Issuing.SaveSelectedInvoiceAsync();
+            await viewModel.SaveWindowSizeAsync(Bounds.Width, Bounds.Height);
+        }
+        finally
+        {
+            _closeSavesCompleted = true;
+            Close();
+        }
     }
 }
