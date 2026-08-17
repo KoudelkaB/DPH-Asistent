@@ -1,10 +1,61 @@
 using Dph.App.ViewModels;
 using Dph.Core.Domain;
+using Dph.Core.Persistence;
 
 namespace Dph.App.Tests;
 
 public sealed class IssuedInvoiceViewModelTests
 {
+    [Fact]
+    public async Task UseAsTemplate_Copies_All_Invoice_Texts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            var repository = new DphRepository(path);
+            await repository.InitializeAsync();
+            var viewModel = new IssuedInvoicesViewModel(
+                repository,
+                null!,
+                [],
+                () => new TaxSubject(),
+                () => Task.CompletedTask,
+                _ => IssuedInvoiceVatPeriodState.Missing,
+                _ => Task.FromResult(new IssuedInvoiceVatUpdateResult(false, "")),
+                _ => Task.FromResult(new IssuedInvoiceVatUpdateResult(false, "")),
+                _ => Task.FromResult(new IssuedInvoiceVatUpdateResult(false, "")),
+                _ => { });
+            var source = new IssuedInvoiceViewModel
+            {
+                Number = $"{DateTime.Today.Year}0001",
+                CustomerName = "Odběratel",
+                IntroText = "Úvodní text šablony",
+                Note = "Poznámka šablony",
+                Footer = "Patička šablony"
+            };
+            source.Items.Add(new IssuedInvoiceItemViewModel { Description = "Služba" });
+            viewModel.SelectedInvoice = source;
+
+            await viewModel.UseAsTemplateCommand.ExecuteAsync(null);
+
+            var copy = Assert.IsType<IssuedInvoiceViewModel>(viewModel.SelectedInvoice);
+            Assert.NotSame(source, copy);
+            Assert.Equal(source.IntroText, copy.IntroText);
+            Assert.Equal(source.Note, copy.Note);
+            Assert.Equal(source.Footer, copy.Footer);
+
+            var storedCopy = await repository.LoadIssuedInvoiceAsync(copy.Id);
+            Assert.NotNull(storedCopy);
+            Assert.Equal(source.IntroText, storedCopy.IntroText);
+            Assert.Equal(source.Note, storedCopy.Note);
+            Assert.Equal(source.Footer, storedCopy.Footer);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void Item_Computes_Line_Amounts_And_Accepts_Comma_Decimals()
     {

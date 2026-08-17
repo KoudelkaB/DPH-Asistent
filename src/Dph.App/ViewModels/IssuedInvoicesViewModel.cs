@@ -592,6 +592,8 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
             CustomerCountry = source.CustomerCountry,
             Currency = source.Currency,
             PaymentMethod = source.PaymentMethod,
+            IntroText = source.IntroText,
+            Note = source.Note,
             Footer = source.Footer,
             Items = source.Items.Select(x => new IssuedInvoiceItem
             {
