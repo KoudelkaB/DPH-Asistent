@@ -73,8 +73,11 @@ iscc /DAppVersion=0.1.0 /DSourceDir="publish\win-x64" packaging\windows\DphAsist
 Vyžaduje `flatpak` + `flatpak-builder` a runtime `org.freedesktop.{Platform,Sdk}//24.08`.
 
 ```bash
+VERSION=0.2.3
+RELEASE_DATE=2026-08-17
+
 dotnet publish src/Dph.App/Dph.App.csproj -c Release -r linux-x64 --self-contained \
-  -p:Version=0.1.0 -o publish/linux-x64
+  -p:Version="$VERSION" -o publish/linux-x64
 
 # Naplnění staging adresáře, ze kterého manifest balí:
 STAGE=packaging/flatpak/staging
@@ -83,13 +86,20 @@ cp -r publish/linux-x64/. "$STAGE/publish/"
 cp packaging/linux/io.github.koudelkab.DphAsistent.desktop "$STAGE/"
 cp packaging/linux/io.github.koudelkab.DphAsistent.metainfo.xml "$STAGE/"
 cp -r packaging/icons "$STAGE/icons"
+python3 packaging/linux/sync-metainfo-release.py \
+  "$STAGE/io.github.koudelkab.DphAsistent.metainfo.xml" "$VERSION" "$RELEASE_DATE"
 
 flatpak-builder --user --force-clean --repo=_flatpak_repo _flatpak_build \
   packaging/flatpak/io.github.koudelkab.DphAsistent.yaml
-flatpak build-bundle _flatpak_repo dist/DphAsistent-0.1.0.flatpak \
+flatpak build-bundle _flatpak_repo "dist/DphAsistent-${VERSION}.flatpak" \
   io.github.koudelkab.DphAsistent
-# instalace: flatpak install --user dist/DphAsistent-0.1.0.flatpak
+# instalace nebo aktualizace: flatpak install --user "dist/DphAsistent-${VERSION}.flatpak"
 ```
+
+Release workflow spouští `sync-metainfo-release.py` automaticky. Doporučené je přidat
+ke každé verzi popis změn přímo do `<releases>` ve zdrojovém metainfo; pokud se na to
+zapomene, build vloží alespoň generický záznam se správnou verzí a datem. GNOME Software
+pak nezůstane na verzi předchozího vydání.
 
 ---
 

@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      release_date: ${{ steps.v.outputs.release_date }}
     steps:
       # Plná historie + tagy jsou nutné, aby MinVer odvodil verzi z git tagu.
       - uses: actions/checkout@v5
@@ -54,8 +55,10 @@ jobs:
             export PATH="${PATH}:${HOME}/.dotnet/tools"
             VER="$(minver --tag-prefix v)"
           fi
+          RELEASE_DATE="$(git log -1 --format=%cs "${GITHUB_SHA}")"
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
-          echo "Verze: ${VER}"
+          echo "release_date=${RELEASE_DATE}" >> "$GITHUB_OUTPUT"
+          echo "Verze: ${VER}, datum vydání: ${RELEASE_DATE}"
 
   windows:
     needs: version
@@ -135,6 +138,13 @@ jobs:
           cp packaging/linux/${APP_ID}.desktop "$STAGE/"
           cp packaging/linux/${APP_ID}.metainfo.xml "$STAGE/"
           cp -r packaging/icons "$STAGE/icons"
+          # GNOME Software odvozuje z AppStreamu zobrazenou verzi i dostupnost
+          # aktualizace. Pokud kurátorovaný záznam chybí, vložíme alespoň
+          # generický, aby metadata nikdy nezůstala na staré verzi.
+          python3 packaging/linux/sync-metainfo-release.py \
+            "$STAGE/${APP_ID}.metainfo.xml" \
+            "${{ needs.version.outputs.version }}" \
+            "${{ needs.version.outputs.release_date }}"
 
       - name: Install flatpak tooling
         run: |

@@ -83,10 +83,40 @@
   </branding>
 
   <releases>
+    <release version="0.2.3" date="2026-08-17">
+      <description>
+        <p>Fixed creating a new invoice from a template.</p>
+        <p xml:lang="cs">Opraveno vytváření nové faktury ze šablony.</p>
+      </description>
+    </release>
+    <release version="0.2.2" date="2026-07-08">
+      <description>
+        <p>Added the reason for amended VAT returns.</p>
+        <p xml:lang="cs">Doplněn důvod dodatečného přiznání.</p>
+      </description>
+    </release>
+    <release version="0.2.1" date="2026-07-08">
+      <description>
+        <p>Fixed amount rounding.</p>
+        <p xml:lang="cs">Opraveno zaokrouhlování částek.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-07-08">
+      <description>
+        <p>
+          Added automatic reverse-charge detection by VAT ID, data migration,
+          corrective and amended filings, and safer editing of locked records.
+        </p>
+        <p xml:lang="cs">
+          Doplněno automatické rozpoznání reverse charge podle DIČ, migrace dat,
+          následná a dodatečná přiznání a bezpečnější editace uzamčených záznamů.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-06-30">
       <description>
-        <p>První veřejné vydání.</p>
-        <p xml:lang="en">First public release.</p>
+        <p>First public release.</p>
+        <p xml:lang="cs">První veřejné vydání.</p>
       </description>
     </release>
   </releases>
