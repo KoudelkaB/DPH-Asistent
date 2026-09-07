@@ -36,7 +36,7 @@ public sealed class EpoXmlImporterTests
     }
 
     [Fact]
-    public void Infers_Vat_Rate_From_Base_And_Vat_Amounts()
+    public void Uses_Kh_Columns_Even_When_Deduction_Is_Limited()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
         File.WriteAllText(path, """
@@ -55,7 +55,7 @@ public sealed class EpoXmlImporterTests
 
         var invoices = Assert.Single(imported.Periods).Invoices;
         Assert.Equal(VatRateKind.Standard21, invoices.Single(x => x.EvidenceNumber == "STD").VatRate);
-        Assert.Equal(VatRateKind.Reduced12, invoices.Single(x => x.EvidenceNumber == "RED").VatRate);
+        Assert.Equal(VatRateKind.Standard21, invoices.Single(x => x.EvidenceNumber == "RED").VatRate);
     }
 
     [Fact]
@@ -90,7 +90,7 @@ public sealed class EpoXmlImporterTests
     }
 
     [Fact]
-    public void Falls_Back_To_Today_When_Submission_Date_Is_Unreadable()
+    public void Rejects_Unreadable_Submission_Date()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
         File.WriteAllText(path, """
@@ -103,13 +103,12 @@ public sealed class EpoXmlImporterTests
             """);
 
         var imported = new ImportedEpoData();
-        new EpoXmlImporter().ImportFile(path, imported);
-
-        Assert.Equal(DateOnly.FromDateTime(DateTime.Today), Assert.Single(imported.Periods).Period.SubmissionDate);
+        Assert.Throws<FormatException>(() => new EpoXmlImporter().ImportFile(path, imported));
+        Assert.Empty(imported.Periods);
     }
 
     [Fact]
-    public void Infers_Vat_Rate_From_Negative_Corrective_Amounts()
+    public void Uses_Kh_Column_For_Negative_Corrective_Amounts()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
         File.WriteAllText(path, """
@@ -125,7 +124,7 @@ public sealed class EpoXmlImporterTests
         var imported = new ImportedEpoData();
         new EpoXmlImporter().ImportFile(path, imported);
 
-        Assert.Equal(VatRateKind.Reduced12, Assert.Single(Assert.Single(imported.Periods).Invoices).VatRate);
+        Assert.Equal(VatRateKind.Standard21, Assert.Single(Assert.Single(imported.Periods).Invoices).VatRate);
     }
 
     [Fact]

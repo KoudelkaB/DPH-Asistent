@@ -29,6 +29,8 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         }
 
         var lines = invoices.ToArray();
+        ValidateSupportedLines(period, lines, _definition.ControlStatementDetailLimitCzk);
+        if (supplementary) ValidatePreviousReturns(subject, period, lastKnownReturns!);
         var dph = new XElement(_definition.VatReturnElement,
             new XAttribute("verzePis", _definition.VatReturnVersion),
             VatReturnHeader(subject, period, resolvedFormType),
@@ -225,6 +227,35 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         return result;
     }
 
+    private static void ValidatePreviousReturns(TaxSubject subject, VatPeriod period, IReadOnlyCollection<XDocument> returns)
+    {
+        var supported = new Dictionary<string, HashSet<string>>
+        {
+            ["Veta1"] = ["obrat23", "dan23", "obrat5", "dan5", "p_sl23_e", "dan_psl23_e", "p_sl5_e", "dan_psl5_e", "p_sl23_z", "dan_psl23_z", "p_sl5_z", "dan_psl5_z"],
+            ["Veta4"] = ["pln23", "odp_tuz23_nar", "pln5", "odp_tuz5_nar", "nar_zdp23", "od_zdp23", "nar_zdp5", "od_zdp5", "odp_sum_nar"],
+            ["Veta6"] = ["dan_zocelk", "odp_zocelk", "dano_da", "dano_no", "dano"]
+        };
+        var index = 0;
+        foreach (var doc in returns)
+        {
+            var form = doc.Root?.Element("DPHDP3");
+            var header = form?.Element("VetaD");
+            var type = header?.Attribute("dapdph_forma")?.Value;
+            if ((int?)header?.Attribute("rok") != period.Year || (int?)header?.Attribute("mesic") != period.Month
+                || NormalizeDic(form?.Element("VetaP")?.Attribute("dic")?.Value) != NormalizeDic(subject.Dic)
+                || (index++ == 0 ? type is not ("B" or "O") : type is not ("D" or "E")))
+                throw new InvalidOperationException("Historie musí obsahovat přiznání stejného subjektu a období: poslední řádné/opravné a navazující dodatečná podání.");
+            foreach (var element in form!.Elements().Where(x => x.Name.LocalName is "Veta1" or "Veta2" or "Veta3" or "Veta4" or "Veta5" or "Veta6"))
+            foreach (var attribute in element.Attributes())
+            {
+                if (string.IsNullOrWhiteSpace(attribute.Value)) continue;
+                if (!decimal.TryParse(attribute.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var value)
+                    || value != 0 && (!supported.TryGetValue(element.Name.LocalName, out var fields) || !fields.Contains(attribute.Name.LocalName)))
+                    throw new InvalidOperationException("Předchozí přiznání obsahuje nepodporované údaje. Dodatečné přiznání dokončete v EPO; aplikace je nesmí automaticky vynulovat.");
+            }
+        }
+    }
+
     // Vlastní daňová povinnost v celých korunách (ř.64 přiznání): > 0 = doplatek, < 0 = nadměrný
     // odpočet. Počítá se přesně jako v DP XML (po řádcích zaokrouhleno na koruny), což je částka,
     // která se reálně platí – ne haléřový součet z výpočtu.
@@ -246,7 +277,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     }
 
     // Zaokrouhlené (celé koruny) řádky přiznání. Reverse charge se objevuje na výstupu i v odpočtu,
-    // takže se ve výsledné dani vyruší.
+    // při plném nároku se záměrně zachovává neutralita i po zaokrouhlení.
     private readonly record struct ReturnBuckets(
         (long Base, long Vat) OutStd,
         (long Base, long Vat) OutRed,
@@ -257,11 +288,10 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         (long Base, long Vat) NonEuStd,
         (long Base, long Vat) NonEuRed)
     {
+        // Záměrná kompenzace zaokrouhlení: při plném nároku zachováváme nulový
+        // dopad RC na výslednou daň. Odpočet přebírá součet vykázaných řádků výstupu.
         public long StdDeductBase => EuStd.Base + NonEuStd.Base;
         public long RedDeductBase => EuRed.Base + NonEuRed.Base;
-        // Reverse charge má být pro vlastní daňovou povinnost neutrální. Odpočet na ř.43/44 proto
-        // bere stejnou celokorunovou daň, která byla přiznána na výstupu na ř.5/6/12/13, i když
-        // EPO může pro sloučený základ ř.43 hlásit propustnou zaokrouhlovací odchylku.
         public long StdDeductVat => EuStd.Vat + NonEuStd.Vat;
         public long RedDeductVat => EuRed.Vat + NonEuRed.Vat;
         public long TaxDueWhole => OutStd.Vat + OutRed.Vat + EuStd.Vat + EuRed.Vat + NonEuStd.Vat + NonEuRed.Vat;
@@ -278,51 +308,30 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         }
     }
 
-    // Whole-crown (base, vat) pro tuzemská plnění daného druhu a sazby (snížená 12 % vs. ostatní).
+    // Celokorunové součty evidence pro jednu sazbu a druh plnění.
     private (long Base, long Vat) DomesticLine(InvoiceLine[] lines, InvoiceKind kind, bool reduced)
     {
         var bucket = lines
             .Where(x => x.Kind == kind && (x.VatRate == VatRateKind.Reduced12) == reduced)
             .ToArray();
-        return (
-            VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(x => x.TaxBaseCzk))),
-            VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(_calculator.ResolveVat))));
+        return RoundedLine(bucket);
     }
 
-    private static long ReverseChargeVatForReportedBase(long reportedBase, InvoiceLine[] bucket)
+    private (long Base, long Vat) RoundedLine(IEnumerable<InvoiceLine> lines)
     {
-        if (bucket.Length == 0)
-        {
-            return 0;
-        }
-
-        var rates = bucket.Select(x => x.VatRate).Distinct().ToArray();
-        if (rates.Length == 1)
-        {
-            return TaxFromReportedBase(reportedBase, rates[0]);
-        }
-
-        return VatCalculator.WholeCrowns(VatCalculator.Money(bucket
-            .GroupBy(x => x.VatRate)
-            .Sum(group =>
-            {
-                var groupBase = VatCalculator.WholeCrowns(VatCalculator.Money(group.Sum(x => x.TaxBaseCzk)));
-                return groupBase * VatCalculator.Rate(group.Key);
-            })));
+        var bucket = lines.ToArray();
+        return (VatCalculator.WholeCrowns(bucket.Sum(x => x.TaxBaseCzk)),
+            VatCalculator.WholeCrowns(bucket.Sum(_calculator.ResolveVat)));
     }
-
-    private static long TaxFromReportedBase(long reportedBase, VatRateKind rate)
-        => VatCalculator.WholeCrowns(VatCalculator.Money(reportedBase * VatCalculator.Rate(rate)));
 
     // Whole-crown (base, vat) for one reverse-charge bucket. eu = dodavatel registrovaný v JČS
-    // (EU prefix DIČ), reduced = snížená sazba (12 %); ostatní (vč. 0 %) spadá do základní.
+    // (EU prefix DIČ), reduced = snížená sazba (12 %). Nulovou sazbu export odmítá.
     private (long Base, long Vat) RcLine(InvoiceLine[] reverseCharge, bool eu, bool reduced)
     {
         var bucket = reverseCharge
             .Where(x => IsEuSupplier(x) == eu && (x.VatRate == VatRateKind.Reduced12) == reduced)
             .ToArray();
-        var reportedBase = VatCalculator.WholeCrowns(VatCalculator.Money(bucket.Sum(x => x.TaxBaseCzk)));
-        return (reportedBase, ReverseChargeVatForReportedBase(reportedBase, bucket));
+        return RoundedLine(bucket);
     }
 
     private static bool IsEuSupplier(InvoiceLine invoice)
@@ -331,6 +340,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     public XDocument ExportControlStatement(TaxSubject subject, VatPeriod period, IEnumerable<InvoiceLine> invoices, string? formType = null)
     {
         var lines = invoices.ToArray();
+        ValidateSupportedLines(period, lines, _definition.ControlStatementDetailLimitCzk);
         var dph = new XElement(_definition.ControlStatementElement,
             new XAttribute("verzePis", _definition.ControlStatementVersion),
             ControlStatementHeader(period, formType ?? period.FormType),
@@ -343,6 +353,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         var row = 1;
         foreach (var document in GroupByDocument(lines, InvoiceKind.ReverseCharge))
         {
+            RequireEvidenceNumber(document);
             var (state, vatId) = SplitEuVatId(document.Dic);
             var element = new XElement("VetaA2",
                 A("c_radku", row++),
@@ -361,6 +372,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         row = 1;
         foreach (var document in issuedDocuments.Where(x => IsDetail(x, "A5")))
         {
+            RequireEvidenceNumber(document);
             var element = new XElement("VetaA4",
                 A("c_radku", row++),
                 A("c_evid_dd", document.EvidenceNumber),
@@ -377,6 +389,9 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         row = 1;
         foreach (var document in receivedDocuments.Where(x => IsDetail(x, "B3")))
         {
+            RequireEvidenceNumber(document);
+            if (!InvoiceKindClassifier.IsCzechDic(document.Dic))
+                throw new InvalidOperationException($"Doklad {document.EvidenceNumber}: oddíl B.2 vyžaduje české DIČ dodavatele.");
             var element = new XElement("VetaB2",
                 A("c_radku", row++),
                 A("c_evid_dd", document.EvidenceNumber),
@@ -411,28 +426,68 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private static List<ControlStatementDocument> GroupByDocument(InvoiceLine[] lines, InvoiceKind kind)
         => lines
             .Where(x => x.Kind == kind)
-            .GroupBy(x => string.IsNullOrWhiteSpace(x.EvidenceNumber)
-                ? $"#{x.Id}"
-                : $"{x.EvidenceNumber.Trim().ToUpperInvariant()}|{x.CounterpartyDic?.Trim().ToUpperInvariant()}")
-            .Select(g => new ControlStatementDocument(
-                g.First().EvidenceNumber,
-                g.First().CounterpartyDic,
-                g.Min(x => x.TaxableSupplyDate),
-                [.. g]))
+            .Select((line, index) => (line, index))
+            .GroupBy(x => (Number: string.IsNullOrWhiteSpace(x.line.EvidenceNumber)
+                    ? $"#{x.index}" : x.line.EvidenceNumber.Trim(),
+                Dic: NormalizeDic(x.line.CounterpartyDic),
+                Name: string.IsNullOrWhiteSpace(x.line.CounterpartyDic) ? x.line.CounterpartyName.Trim() : ""), x => x.line)
+            .SelectMany(document => document.GroupBy(x => (x.TaxableSupplyDate, x.PartialDeduction))
+                .Select(rows => new ControlStatementDocument(
+                    rows.First().EvidenceNumber,
+                    rows.First().CounterpartyDic,
+                    rows.Key.TaxableSupplyDate,
+                    [.. rows],
+                    document.Sum(x => x.GrossCzk))))
             .ToList();
 
     private sealed record ControlStatementDocument(
         string EvidenceNumber,
         string? Dic,
         DateOnly TaxableSupplyDate,
-        IReadOnlyList<InvoiceLine> Lines)
-    {
-        public decimal GrossCzk => Lines.Sum(x => x.GrossCzk);
-    }
+        IReadOnlyList<InvoiceLine> Lines,
+        decimal GrossCzk);
 
     private bool IsDetail(ControlStatementDocument document, string summaryCode)
-        => !string.Equals(document.EvidenceNumber, summaryCode, StringComparison.OrdinalIgnoreCase)
-           && document.GrossCzk > _definition.ControlStatementDetailLimitCzk;
+        => IsDetail(document, summaryCode, _definition.ControlStatementDetailLimitCzk);
+
+    private static bool IsDetail(ControlStatementDocument document, string summaryCode, decimal detailLimit)
+        => !string.Equals(document.EvidenceNumber.Trim(), summaryCode, StringComparison.OrdinalIgnoreCase)
+           && (summaryCode != "A5" || InvoiceKindClassifier.IsCzechDic(document.Dic))
+           && Math.Abs(document.GrossCzk) > detailLimit;
+
+    private static void RequireEvidenceNumber(ControlStatementDocument document)
+    {
+        if (string.IsNullOrWhiteSpace(document.EvidenceNumber))
+            throw new InvalidOperationException("Pro jednotlivě vykazovaný doklad KH vyplňte evidenční číslo dokladu.");
+    }
+
+    public static void ValidateSupportedLines(VatPeriod period, IEnumerable<InvoiceLine> lines, decimal? detailLimit = null)
+    {
+        if (period.Year < 2024 || period.Month is < 1 or > 12 || period.Year > 9999)
+            throw new InvalidOperationException("Export podporuje měsíční období od roku 2024 (sazby 21 % a 12 %).");
+        var resolvedDetailLimit = detailLimit ?? EpoTaxFormDefinition.Current.ControlStatementDetailLimitCzk;
+        var allLines = lines.ToArray();
+        foreach (var line in allLines)
+        {
+            if (!Enum.IsDefined(line.Kind) || line.VatRate is not (VatRateKind.Standard21 or VatRateKind.Reduced12))
+                throw new InvalidOperationException($"Doklad {line.EvidenceNumber}: plnění bez daně vyžaduje určení právního režimu. Export podporuje pouze zdanitelná plnění se sazbou 21 % a 12 %.");
+            if (line.PartialDeduction)
+                throw new InvalidOperationException($"Doklad {line.EvidenceNumber}: poměrný nebo krácený odpočet nelze bezpečně exportovat bez údajů o rozsahu nároku a celkové hodnotě dokladu. Zpracujte jej v EPO.");
+        }
+        foreach (var document in GroupByDocument(allLines, InvoiceKind.ReceivedDomesticWithVat)
+                     .Where(x => IsDetail(x, "B3", resolvedDetailLimit)))
+        {
+            if (!InvoiceKindClassifier.IsCzechDic(document.Dic))
+                throw new InvalidOperationException($"Doklad {document.EvidenceNumber}: tuzemský doklad nad {resolvedDetailLimit:0} Kč vyžaduje české DIČ dodavatele.");
+            RequireEvidenceNumber(document);
+        }
+        foreach (var document in GroupByDocument(allLines, InvoiceKind.IssuedDomestic).Where(x => IsDetail(x, "A5", resolvedDetailLimit))
+                     .Concat(GroupByDocument(allLines, InvoiceKind.ReverseCharge)))
+            RequireEvidenceNumber(document);
+    }
+
+    private static string NormalizeDic(string? dic)
+        => InvoiceKindClassifier.IsCzechDic(dic) ? StripCz(dic).ToUpperInvariant() : InvoiceKindClassifier.NormalizeVatId(dic);
 
     // Souhrnný řádek (A.5/B.3) za doklady pod limitem a za importované souhrny.
     private void AddSummarySection(XElement dph, string elementName, IEnumerable<ControlStatementDocument> documents)
@@ -448,7 +503,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         dph.Add(element);
     }
 
-    // Sloupce KH podle sazby: 1 = základní (vč. 0 %), 2 = snížená 12 % – stejné dělení jako
+    // Sloupce KH podle sazby: 1 = základní, 2 = snížená 12 % – stejné dělení jako
     // ř.1/ř.2 přiznání, aby křížová kontrola DP ↔ KH seděla.
     private void AddRateColumns(XElement element, IEnumerable<InvoiceLine> lines)
     {
@@ -476,7 +531,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     // registrace nechává obě pole prázdná.
     private static (string State, string Number) SplitEuVatId(string? dic)
     {
-        var trimmed = dic?.Trim();
+        var trimmed = InvoiceKindClassifier.NormalizeVatId(dic);
         return trimmed is { Length: > 2 } && InvoiceKindClassifier.IsEuSupplier(trimmed)
             ? (trimmed[..2].ToUpperInvariant(), trimmed[2..])
             : ("", "");
@@ -497,7 +552,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         // Dodatečné přiznání musí uvést den zjištění důvodů pro jeho podání (§141 odst. 1 DŘ).
         if (formType is "D" or "E")
         {
-            element.Add(A("d_zjist", Date(period.SubmissionDate)));
+            element.Add(A("d_zjist", Date(RequireDiscoveryDate(period))));
         }
 
         return element;
@@ -516,7 +571,7 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         // Následné KH musí uvést den zjištění důvodů pro jeho podání (§101f odst. 2 ZDPH).
         if (formType is "N" or "E")
         {
-            element.Add(A("d_zjist", Date(period.SubmissionDate)));
+            element.Add(A("d_zjist", Date(RequireDiscoveryDate(period))));
         }
 
         return element;
@@ -555,6 +610,13 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         return element;
     }
 
+    private static DateOnly RequireDiscoveryDate(VatPeriod period)
+    {
+        if (period.DiscoveryDate is not { } date || date > period.SubmissionDate)
+            throw new InvalidOperationException("Vyplňte skutečný den zjištění důvodů opravy, nejpozději v den vyhotovení.");
+        return date;
+    }
+
     private XDocument Wrap(XElement form) => new(new XDeclaration("1.0", "UTF-8", null),
         new XElement("Pisemnost",
             A("nazevSW", _definition.SoftwareName),
@@ -564,7 +626,9 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private static XAttribute A(string name, object? value) => new(name, value ?? "");
     private static string Date(DateOnly value) => value.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
     private static string Money(decimal value) => VatCalculator.Money(value).ToString("0.##", CultureInfo.InvariantCulture);
-    private static string StripCz(string? value) => string.IsNullOrWhiteSpace(value)
-        ? ""
-        : value.StartsWith("CZ", StringComparison.OrdinalIgnoreCase) ? value[2..] : value;
+    private static string StripCz(string? value)
+    {
+        var trimmed = InvoiceKindClassifier.NormalizeVatId(value);
+        return trimmed.StartsWith("CZ", StringComparison.OrdinalIgnoreCase) ? trimmed[2..] : trimmed;
+    }
 }

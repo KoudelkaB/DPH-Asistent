@@ -7,7 +7,8 @@ namespace Dph.App.ViewModels;
 
 public partial class IssuedInvoiceItemViewModel : ViewModelBase
 {
-    public string[] VatRateOptions { get; } = ["21", "12", "0"];
+    // Snapshot načtené sazby: ItemsSource musí zůstat stabilní i během výběru v ComboBoxu.
+    public string[] VatRateOptions { get; private init; } = ["21", "12"];
 
     [ObservableProperty] private long id;
     [ObservableProperty] private string description = "";
@@ -41,10 +42,11 @@ public partial class IssuedInvoiceItemViewModel : ViewModelBase
     public static IssuedInvoiceItemViewModel FromDomain(IssuedInvoiceItem item) => new()
     {
         Id = item.Id,
+        VatRateOptions = item.VatRate == VatRateKind.Zero0 ? ["21", "12", "0"] : ["21", "12"],
         Description = item.Description,
-        Quantity = Format(item.Quantity),
+        Quantity = item.Quantity.ToString(CultureInfo.InvariantCulture),
         Unit = item.Unit,
-        UnitPriceCzk = Format(item.UnitPriceCzk),
+        UnitPriceCzk = item.UnitPriceCzk.ToString(CultureInfo.InvariantCulture),
         VatRate = RateText(item.VatRate)
     };
 
@@ -52,14 +54,14 @@ public partial class IssuedInvoiceItemViewModel : ViewModelBase
     {
         Id = Id,
         Description = Description,
-        Quantity = ParseDecimal(Quantity),
+        Quantity = DecimalInput.Parse(Quantity),
         Unit = Unit.NullIfWhiteSpace() ?? "ks",
-        UnitPriceCzk = ParseDecimal(UnitPriceCzk),
+        UnitPriceCzk = DecimalInput.Parse(UnitPriceCzk),
         VatRate = ParseVatRate(VatRate)
     };
 
     private static decimal ParseDecimal(string value)
-        => decimal.TryParse(value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed)
+        => DecimalInput.TryParse(value, out var parsed)
             ? parsed
             : 0m;
 

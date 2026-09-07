@@ -8,7 +8,8 @@ public sealed class EpoXmlImporter
     public ImportedEpoData ImportDirectory(string directory)
     {
         var result = new ImportedEpoData();
-        foreach (var file in Directory.EnumerateFiles(directory, "*.xml", SearchOption.AllDirectories))
+        var failedStatements = new HashSet<(string Dic, int Year, int Month)>();
+        foreach (var file in Directory.EnumerateFiles(directory, "*.xml", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))
         {
             try
             {
@@ -17,9 +18,28 @@ public sealed class EpoXmlImporter
             catch
             {
                 result.SkippedFiles.Add(file);
+                // Jen nečitelné KH identifikovaného poplatníka může zneplatnit jeho evidenci.
+                // Rozsah vyhodnotíme až po načtení složky, nezávisle na pořadí souborů.
+                try
+                {
+                    var form = XDocument.Load(file).Root?.Element("DPHKH1");
+                    var header = form?.Element("VetaD");
+                    var dic = NormalizeCzechDic(form?.Element("VetaP")?.Attribute("dic")?.Value ?? "");
+                    if (InvoiceKindClassifier.IsCzechDic(dic)
+                        && int.TryParse(header?.Attribute("rok")?.Value, out var year)
+                        && int.TryParse(header?.Attribute("mesic")?.Value, out var month))
+                        failedStatements.Add((dic, year, month));
+                }
+                catch { /* Bez čitelné identity soubor nemůže měnit jiné podání. */ }
             }
         }
 
+        var selectedDic = NormalizeCzechDic(result.Subject?.Dic ?? "");
+        foreach (var failed in failedStatements.Where(x => x.Dic == selectedDic))
+        {
+            result.Periods.RemoveAll(x => x.Period.Year == failed.Year && x.Period.Month == failed.Month);
+            result.Warnings.Add($"Období {failed.Year:D4}-{failed.Month:D2} nebylo importováno: KH subjektu {failed.Dic} obsahuje chybu nebo nejednoznačnou historii.");
+        }
         return result;
     }
 
@@ -28,7 +48,36 @@ public sealed class EpoXmlImporter
         var document = XDocument.Load(file);
         var formElement = document.Root?.Elements().FirstOrDefault();
         var period = ReadPeriod(formElement);
+        if (formElement?.Name.LocalName is not ("DPHKH1" or "DPHDP3") || period is null || period.Year < 2024)
+            throw new FormatException("Import podporuje měsíční přiznání a KH od roku 2024.");
+
+        var isControlStatement = formElement.Name.LocalName == "DPHKH1";
+        var parsed = new ImportedPeriod(period);
+        if (isControlStatement)
+        {
+            if (formElement.Elements().Any(x => x.Name.LocalName is "VetaA1" or "VetaA3" or "VetaB1")
+                || formElement.Elements().Any(x => Attr(x, "zdph_44") is not ("" or "N")
+                    || Attr(x, "kod_rezim_pl") is not ("" or "0")))
+                throw new FormatException("KH obsahuje nepodporovaný režim; nelze importovat jen část jeho plnění.");
+            ImportControlStatementInvoices(document, parsed);
+        }
+
         var subject = document.Descendants("VetaP").FirstOrDefault();
+        if (subject is not null && result.Subject is not null
+            && NormalizeCzechDic(Attr(subject, "dic")) != NormalizeCzechDic(result.Subject.Dic))
+            throw new FormatException("Složka obsahuje podání různých daňových subjektů.");
+
+        var existing = result.Periods.FirstOrDefault(x => x.Period.Year == period.Year && x.Period.Month == period.Month);
+        var replaceInvoices = isControlStatement;
+        if (isControlStatement && existing?.ControlStatement is { } previous)
+        {
+            var previousPeriod = ReadPeriod(previous)!;
+            var order = period.SubmissionDate.CompareTo(previousPeriod.SubmissionDate);
+            if (order == 0) order = FormOrder(period.FormType).CompareTo(FormOrder(previousPeriod.FormType));
+            if (order == 0 && !XNode.DeepEquals(formElement, previous))
+                throw new FormatException("Různá KH mají stejné datum a druh podání. Importujte jednoznačně poslední podané KH.");
+            replaceInvoices = order > 0;
+        }
         if (subject is not null && result.Subject is null)
         {
             result.Subject = new TaxSubject
@@ -53,7 +102,14 @@ public sealed class EpoXmlImporter
         if (period is not null)
         {
             var importedPeriod = result.GetOrAddPeriod(period);
-            ImportControlStatementInvoices(document, importedPeriod);
+            if (replaceInvoices)
+            {
+                importedPeriod.Invoices.Clear();
+                importedPeriod.Invoices.AddRange(parsed.Invoices);
+                importedPeriod.ControlStatement = new XElement(formElement);
+                importedPeriod.Period.SubmissionDate = period.SubmissionDate;
+                importedPeriod.Period.FormType = period.FormType;
+            }
         }
 
         foreach (var customer in document.Descendants("VetaA4").Select(x => Attr(x, "dic_odb")).Where(x => x.Length > 0))
@@ -104,10 +160,16 @@ public sealed class EpoXmlImporter
         }
     }
 
+    private static int FormOrder(string form) => form switch { "B" => 0, "O" => 1, "N" => 2, "E" => 3, _ => -1 };
+
     private static string Attr(XElement element, string name) => element.Attribute(name)?.Value?.Trim() ?? "";
     private static string? EmptyToNull(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
     private static string NormalizeCzechDic(string value)
-        => value.StartsWith("CZ", StringComparison.OrdinalIgnoreCase) ? value : "CZ" + value;
+    {
+        var normalized = InvoiceKindClassifier.NormalizeVatId(value);
+        return normalized.Length == 0 || normalized.StartsWith("CZ", StringComparison.Ordinal)
+            ? normalized : "CZ" + normalized;
+    }
 
     private static VatPeriod? ReadPeriod(XElement? formElement)
     {
@@ -119,7 +181,7 @@ public sealed class EpoXmlImporter
 
         if (!int.TryParse(Attr(header, "rok"), out var year)
             || !int.TryParse(Attr(header, "mesic"), out var month)
-            || month is < 1 or > 12)
+            || month is < 1 or > 12 || year is < 1 or > 9999)
         {
             return null;
         }
@@ -128,7 +190,7 @@ public sealed class EpoXmlImporter
         {
             Year = year,
             Month = month,
-            SubmissionDate = ParseEpoDate(Attr(header, "d_poddp")) ?? DateOnly.FromDateTime(DateTime.Today),
+            SubmissionDate = ParseEpoDate(Attr(header, "d_poddp")) ?? throw new FormatException("Chybí platné datum vyhotovení XML."),
             FormType = EmptyToNull(Attr(header, "khdph_forma")) ?? EmptyToNull(Attr(header, "dapdph_forma")) ?? "B"
         };
     }
@@ -201,9 +263,10 @@ public sealed class EpoXmlImporter
     // sloupec vznikne jeden řádek tabulky, stejně jako je exportér zpátky slučuje do jednoho dokladu.
     private static void AddRateLines(XElement element, ImportedPeriod period, Func<InvoiceLine> create)
     {
-        AddRateLine(element, period, create, "zakl_dane1", "dan1", inferredRate: null);
+        AddRateLine(element, period, create, "zakl_dane1", "dan1", VatRateKind.Standard21);
         AddRateLine(element, period, create, "zakl_dane2", "dan2", VatRateKind.Reduced12);
-        AddRateLine(element, period, create, "zakl_dane3", "dan3", VatRateKind.Reduced12);
+        if (ParseMoney(Attr(element, "zakl_dane3")) != 0 || ParseMoney(Attr(element, "dan3")) != 0)
+            throw new FormatException("Historická sazba ve třetím sloupci KH není podporována; nelze ji převést na 12 %.");
     }
 
     private static void AddRateLine(
@@ -212,7 +275,7 @@ public sealed class EpoXmlImporter
         Func<InvoiceLine> create,
         string baseAttr,
         string vatAttr,
-        VatRateKind? inferredRate)
+        VatRateKind inferredRate)
     {
         var baseCzk = ParseMoney(Attr(element, baseAttr));
         var vatCzk = ParseMoney(Attr(element, vatAttr));
@@ -224,32 +287,14 @@ public sealed class EpoXmlImporter
         var line = create();
         line.TaxBaseCzk = baseCzk;
         line.VatCzk = vatCzk;
-        // Sloupec 1 je podle pokynů základní sazba, ale starší exporty této aplikace do něj psaly
-        // i sníženou – proto se sazba dopočítá z poměru daně a základu.
-        line.VatRate = inferredRate ?? InferVatRate(baseCzk, vatCzk);
+        // Autoritou je sloupec KH. Poměr daně a základu může změnit zaokrouhlení
+        // nebo omezení nároku na odpočet (např. u osobního automobilu).
+        line.VatRate = inferredRate;
         period.Invoices.Add(line);
     }
 
-    // KH carries only base + VAT amounts, not the rate. Recover it from the ratio so later edits
-    // in the UI recompute VAT at the right rate instead of defaulting everything to 21 %.
-    private static VatRateKind InferVatRate(decimal baseCzk, decimal vatCzk)
-    {
-        if (baseCzk == 0m)
-        {
-            return VatRateKind.Standard21;
-        }
-
-        // Math.Abs kvůli opravným dokladům (záporný základ i daň) – poměr sazby je stejný.
-        return Math.Abs(vatCzk / baseCzk) switch
-        {
-            < 0.06m => VatRateKind.Zero0,
-            < 0.165m => VatRateKind.Reduced12,
-            _ => VatRateKind.Standard21
-        };
-    }
-
     private static DateOnly ParseDate(string value, VatPeriod period)
-        => ParseEpoDate(value) ?? LastDay(period);
+        => ParseEpoDate(value) ?? throw new FormatException($"Neplatné datum plnění: {value}.");
 
     // EPO zapisuje data ve tvaru "dd.MM.yyyy" – parsování nesmí záviset na jazyku systému.
     private static DateOnly? ParseEpoDate(string value)
@@ -262,13 +307,12 @@ public sealed class EpoXmlImporter
         => new(period.Year, period.Month, DateTime.DaysInMonth(period.Year, period.Month));
 
     private static decimal ParseMoney(string value)
-        => decimal.TryParse(value.Replace(',', '.'), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
-            ? parsed
-            : 0m;
+        => string.IsNullOrWhiteSpace(value) ? 0m : Calculations.DecimalInput.Parse(value);
 }
 
 public sealed class ImportedEpoData
 {
+    public List<string> Warnings { get; } = [];
     public TaxSubject? Subject { get; set; }
     public Dictionary<string, Counterparty> Counterparties { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<ImportedPeriod> Periods { get; } = [];
@@ -292,4 +336,5 @@ public sealed class ImportedPeriod(VatPeriod period)
 {
     public VatPeriod Period { get; } = period;
     public List<InvoiceLine> Invoices { get; } = [];
+    internal XElement? ControlStatement { get; set; }
 }

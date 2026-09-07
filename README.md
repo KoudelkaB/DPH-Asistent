@@ -18,10 +18,9 @@ Sestavení balíčků a publikace na Flathub/Winget jsou popsané v [PUBLISHING.
 - Evidence poplatníka včetně DIČ, IČO, adresy, e-mailu, telefonu, datové schránky, finančního úřadu, územního pracoviště a bankovního účtu.
 - Doplnění údajů poplatníka a subjektů z ARES.
 - Načítání seznamu finančních úřadů a územních pracovišť.
-- Evidence vydaných a přijatých dokladů; u přijatých se tuzemský režim vs. reverse charge
-  (přijetí služby ze zahraničí) rozpozná automaticky z DIČ dodavatele.
+- Evidence vydaných, tuzemských přijatých dokladů a zahraničních služeb v režimu reverse charge; režim se volí podle povahy plnění.
 - Automatický výpočet základu, DPH a částky s DPH podle sazby.
-- Podpora sazeb DPH 21 %, 12 % a 0 %.
+- Nové položky nabízejí podporované sazby DPH 21 % a 12 %. Staré položky s 0 % zůstávají viditelné k opravě a existující faktury lze uložit i bez změny sazby; nové vystavování a automatické vložení takových faktur do DPH je zablokováno.
 - Podpora cizí měny a dopočtu základu v CZK kurzem ČNB podle DUZP.
 - Adresář odběratelů a dodavatelů s vazbou na doklady.
 - Automatické ukládání řádků dokladů během práce.
@@ -42,12 +41,18 @@ Export pracuje s těmito typy řádků:
 - **Přijatá tuzemská plnění s českou DPH**: odpočet, řádky 40/41 přiznání, kontrolní hlášení B.2/B.3.
 - **Reverse charge pro zahraniční služby**: přijetí služby od osoby neusazené v tuzemsku. Dodavatelé registrovaní v jiném členském státě EU se exportují do řádků 5/6, dodavatelé ze třetích zemí do řádků 12/13, odpočet u obojího do řádků 43/44. V kontrolním hlášení se vykazují v oddílu A.2 (EU dodavatel s rozděleným VAT ID, třetí země s prázdnou identifikací).
 
-O zařazení přijatého dokladu (tuzemský odpočet vs. reverse charge, EU vs. třetí země) rozhoduje aplikace sama podle prefixu DIČ dodavatele – uživatel v UI volí jen Vydaná/Přijatá. Nejde o tuzemský režim přenesení daňové povinnosti podle §92a (ř. 10/11, KH B.1), ten aplikace nemodeluje.
+Typ dokladu se volí výslovně: **Vydaná**, **Přijatá** (tuzemská s českou DPH), nebo **Zahraniční služba (RC)**. Samotné DIČ neurčuje místo plnění, povinnost přiznat daň ani nárok na odpočet. U RC se prefixem DIČ rozlišuje registrace v EU a třetí země. Severní Irsko (`XI`) je pro služby třetí zemí. Tuzemský režim přenesení daňové povinnosti podle § 92a (ř. 10/11, KH B.1) aplikace nemodeluje.
+
+Export je určen pro měsíčního plátce – fyzickou osobu, období od roku 2024, běžná zdanitelná plnění se sazbami 21 % a 12 % a plný nárok na odpočet. Poměrný/krácený odpočet a neurčená osvobození (položky 0 %) export zastaví s vysvětlením. Zaškrtnutí „Část.“ samo částky nekrátí. Aplikace také automaticky neposuzuje nárok na odpočet, splatnost přijatých závazků ani opravy odpočtu u nezaplacených faktur podle § 74b. Tyto případy, historické sazby, zálohy a zvláštní režimy je nutné řešit samostatně v EPO.
+
+Daň se vede v haléřích; export sčítá evidované částky a zaokrouhluje je na celé koruny. U reverse charge zůstává záměrná kompenzace: odpočet ř. 43/44 přebírá součet vykázaných výstupních řádků, aby RC s plným nárokem mělo nulový dopad na výslednou daň. Tento postup se může lišit o korunu od samostatného zaokrouhlení celého součtu odpočtu. Jde o zachované pravidlo aplikace, nikoli o doloženou zákonnou výjimku ze zaokrouhlování; před podáním ověřte jeho přijetí v EPO.
+
+Před výběrem exportní složky probíhá stejná kontrola celých dokladů jako při sestavení XML. DIČ se normalizuje včetně vnitřních mezer. Limit KH se posuzuje podle celého dokladu, u běžných oprav podle absolutní hodnoty opravy. Tuzemská vydaná plnění bez českého DIČ odběratele se vykazují v A.5; u podnikajícího odběratele doplňte jeho tuzemské DIČ, pokud mu bylo přiděleno.
 
 Při opakovaném exportu již podaného období se aplikace řídí lhůtou pro podání (25. den následujícího měsíce, posunutý na nejbližší pracovní den):
 
 - **Do lhůty** nabídne řádné (přepíše stávající XML), nebo **opravné** přiznání a kontrolní hlášení (forma „O“).
-- **Po lhůtě** vygeneruje **dodatečné přiznání** (forma „D“, jen rozdíly oproti poslední známé dani na ř. 66, s datem zjištění) a **následné kontrolní hlášení** (forma „N“, kompletní data). Rozdíly se počítají proti hodnotám skutečně vykázaným v naposledy podaném XML; beze změny plnění se dodatečné přiznání nepodává a vznikne jen následné kontrolní hlášení.
+- **Po lhůtě** vygeneruje **dodatečné přiznání** (forma „D“, jen rozdíly oproti poslední známé dani na ř. 66, se skutečným datem zjištění, které uživatel vyplní při exportu) a **následné kontrolní hlášení** (forma „N“, kompletní data). Rozdíly se počítají proti hodnotám skutečně vykázaným v naposledy podaném XML; beze změny plnění se dodatečné přiznání nepodává a vznikne jen následné kontrolní hlášení.
 
 Opravné, dodatečné i následné exporty dostávají samostatný název souboru, aby nepřepsaly předchozí podání.
 
@@ -60,7 +65,7 @@ Samostatná agenda vydaných faktur umožňuje:
 - evidovat odběratele ručně, z adresáře nebo doplněním z ARES,
 - zadat položky faktury s množstvím, měrnou jednotkou, cenou za jednotku a sazbou DPH,
 - automaticky spočítat základ, DPH a celkovou částku,
-- nastavit datum vystavení, DUZP, splatnost, variabilní symbol a měnu,
+- nastavit datum vystavení, DUZP, splatnost a variabilní symbol (vystavování a PDF podporují CZK),
 - použít úvodní text s placeholdery `{měsíc}` a `{rok}`,
 - přidat poznámku a patičku,
 - vložit fakturu do evidence DPH,
@@ -81,7 +86,10 @@ Na kartě Import lze načíst složku s historickými XML soubory. Import slouž
 - načte údaje poplatníka,
 - založí nalezená období,
 - doplní adresář subjektů,
-- importuje dokladové řádky, pokud období ještě nemá vlastní řádky,
+- importuje dokladové řádky, pokud období ještě nemá vlastní řádky; následné/opravné KH nahrazuje předchozí KH podle data vyhotovení a druhu podání,
+- opakované načtení stejného KH nezvyšuje částky,
+- odmítne nepodporované oddíly KH a neplatné částky; při nejednoznačné historii je nutné vybrat poslední skutečně podané KH,
+- chybný KH může zablokovat pouze stejné období stejného identifikovaného poplatníka; import oznámí konkrétní období a důvod. Jiné formuláře (např. souhrnné hlášení) a soubory jiného poplatníka pouze přeskočí,
 - přeskočené nebo nevyhovující soubory započítá do výsledného hlášení.
 
 Historická XML jsou brána jako vstupní data; autoritou pro nová podání je vždy aktuální export z aplikace a následná kontrola v EPO.
@@ -116,7 +124,7 @@ dotnet run --project src/Dph.App/Dph.App.csproj
 Spuštění testů:
 
 ```bash
-dotnet test tests/Dph.Core.Tests/Dph.Core.Tests.csproj
+dotnet test Dph.slnx
 ```
 
 Verze aplikace se neudržuje ručně – generuje ji [MinVer](https://github.com/adamralph/minver) z git tagů `vX.Y.Z`. Postup vydání je v [PUBLISHING.md](PUBLISHING.md).
@@ -130,3 +138,15 @@ Verze aplikace se neudržuje ručně – generuje ji [MinVer](https://github.com
 ## Licence
 
 Projekt je dostupný pod licencí MIT. Viz [LICENSE](LICENSE).
+
+## Podklady pro daňová pravidla
+
+Zdroje použité při revizi daňových výpočtů:
+
+- [Pokyny Finanční správy k přiznání DPH, vzor 22](https://financnisprava.gov.cz/assets/tiskopisy/5412_22.pdf): rozdělení plnění a odpočtů do řádků, rozdílové dodatečné přiznání.
+- [Metodická informace ke KH od 1. 1. 2024](https://financnisprava.gov.cz/assets/cs/prilohy/d-seznam-dani/Metodicka_informace_k_vyplneni_KH_20240101.pdf): limit dokladu, záporné opravy, identifikace protistran, částečný odpočet.
+- [Informace GFŘ k Brexitu](https://financnisprava.gov.cz/assets/cs/prilohy/d-seznam-dani/Info-dopady-BREXITu-na-DPH-od-20210101.pdf): Severní Irsko v režimu služeb.
+- [Výpočet a zaokrouhlování DPH](https://financnisprava.gov.cz/cs/financni-sprava/novinky/novinky-2019/vypocet-dph-a-zaokrouhlovani-od-1-10-2019): metody výpočtu daně; aktuální sazby určuje § 47 ZDPH.
+- [Aktuální struktura DPHDP3](https://adisspr.mfcr.cz/dpr/adis/idpr_pub/epo2_info/popis_struktury_detail.faces?zkratka=DPHDP3): pole přiznání a skutečný den zjištění důvodů dodatečného podání.
+
+Vygenerování XML není odeslání ani potvrzení podání. Historie exportních/importních souborů musí odpovídat skutečně podaným verzím; automatické rozpoznání doručení správci daně aplikace nemá.

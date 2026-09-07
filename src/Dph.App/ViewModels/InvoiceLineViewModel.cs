@@ -11,21 +11,16 @@ public partial class InvoiceLineViewModel : ViewModelBase
     private bool _isRecalculating;
     private bool _isApplyingCounterparty;
 
-    // Uživatel rozlišuje jen Vydaná/Přijatá; režim přijatého plnění (tuzemský odpočet vs.
-    // reverse charge ze zahraničí) se odvozuje z DIČ dodavatele – viz InvoiceKindClassifier
-    // a sloupec „Režim“ v tabulce.
+    // Daňový režim určuje uživatel podle plnění, nikoli automaticky podle DIČ.
     public string[] KindOptions { get; } =
     [
         "Vydaná",
-        "Přijatá"
+        "Přijatá",
+        "Zahraniční služba (RC)"
     ];
 
-    public string[] VatRateOptions { get; } = ["21", "12", "0"];
-
-    // Poměrný/krácený odpočet (atribut pomer v KH) dává smysl jen u přijaté tuzemské faktury,
-    // a do XML se promítne až nad detailním limitem KH. U vydaných a reverse je strukturálně
-    // bezpředmětný, pod limitem nemá vliv na XML – viz EpoXmlExporter.VetaB2.
-    private static readonly decimal PartialDeductionLimitCzk = EpoTaxFormDefinition.Current.ControlStatementDetailLimitCzk;
+    // Snapshot načtené sazby: ItemsSource musí zůstat stabilní i během výběru v ComboBoxu.
+    public string[] VatRateOptions { get; private init; } = ["21", "12"];
 
     [ObservableProperty] private long id;
     [ObservableProperty] private long periodId;
@@ -72,11 +67,12 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty] private string vatRate = "21";
     [ObservableProperty] private bool partialDeduction;
 
-    // Skutečný režim řádku: Vydaná podle výběru, u Přijaté rozhoduje DIČ dodavatele (a výjimka
-    // pro souhrn B3). Zobrazuje se ve sloupci „Režim“, aby automatika byla vidět.
-    public InvoiceKind DerivedKind => Kind == "Vydaná"
-        ? InvoiceKind.IssuedDomestic
-        : InvoiceKindClassifier.ClassifyReceived(CounterpartyDic, EvidenceNumber);
+    public InvoiceKind DerivedKind => Kind switch
+    {
+        "Vydaná" => InvoiceKind.IssuedDomestic,
+        "Zahraniční služba (RC)" => InvoiceKind.ReverseCharge,
+        _ => InvoiceKind.ReceivedDomesticWithVat
+    };
 
     public string VatModeText => DerivedKind switch
     {
@@ -90,24 +86,21 @@ public partial class InvoiceLineViewModel : ViewModelBase
         InvoiceKind.IssuedDomestic => "Daň na výstupu – ř.1/2 přiznání, KH oddíl A.4/A.5.",
         InvoiceKind.ReceivedDomesticWithVat =>
             "Tuzemské přijaté plnění s odpočtem – ř.40/41 přiznání, KH oddíl B.2/B.3. "
-            + "Určeno podle českého DIČ dodavatele (prefix CZ nebo jen číslice), příp. souhrnu B3.",
+            + "Volte pouze pro tuzemské plnění s českou DPH. Samotné DIČ neurčuje režim plnění.",
         _ => InvoiceKindClassifier.IsEuSupplier(CounterpartyDic)
             ? "Reverse charge – dodavatel registrovaný v EU (podle prefixu DIČ): ř.5/6 + odpočet ř.43/44, KH oddíl A.2."
             : "Reverse charge – dodavatel ze třetí země / bez EU DIČ: ř.12/13 + odpočet ř.43/44, KH oddíl A.2. "
-              + "Tuzemská přijatá faktura se pozná podle DIČ s prefixem CZ – vyplň ho. "
-              + "Souhrn drobných tuzemských dokladů bez DIČ zadej s číslem dokladu B3."
+              + "Pouze služby s místem plnění v ČR, u kterých přiznává daň příjemce."
     };
 
     // Checkbox "Část." zobrazujeme jen u přijaté tuzemské faktury – jinde je bezpředmětný.
     public bool ShowPartialDeduction => DerivedKind == InvoiceKind.ReceivedDomesticWithVat;
 
-    // Povolený jen nad limitem KH; pod limitem necháváme uloženou hodnotu, ale needitovatelnou.
+    // Označení nepodporovaného částečného nároku platí bez ohledu na limit KH.
     public bool IsPartialDeductionEnabled
-        => ShowPartialDeduction && ParseDecimal(GrossCzk) > PartialDeductionLimitCzk;
+        => ShowPartialDeduction;
 
-    public string PartialDeductionTooltip => IsPartialDeductionEnabled
-        ? "Krácený / poměrný odpočet – v kontrolním hlášení nastaví pomer=A."
-        : $"Pod limitem KH ({PartialDeductionLimitCzk:0} Kč vč. DPH) se poměrný odpočet do XML nepromítá.";
+    public string PartialDeductionTooltip => "Částečný odpočet: aplikace nemá údaje pro jeho výpočet. Označené doklady blokují export; přiznání dokončete v EPO.";
 
     [ObservableProperty] private string currency = "CZK";
     [ObservableProperty] private string foreignAmount = "";
@@ -119,6 +112,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
         var viewModel = new InvoiceLineViewModel
         {
             Id = invoice.Id,
+            VatRateOptions = invoice.VatRate == VatRateKind.Zero0 ? ["21", "12", "0"] : ["21", "12"],
             PeriodId = invoice.PeriodId,
             IssuedInvoiceId = invoice.IssuedInvoiceId,
             Kind = KindText(invoice.Kind),
@@ -129,8 +123,8 @@ public partial class InvoiceLineViewModel : ViewModelBase
             TaxableSupplyDate = invoice.TaxableSupplyDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             PartialDeduction = invoice.PartialDeduction,
             Currency = invoice.Currency,
-            ForeignAmount = invoice.ForeignAmount is null ? "" : Format(invoice.ForeignAmount.Value),
-            ExchangeRate = invoice.ExchangeRate is null ? "" : Format(invoice.ExchangeRate.Value),
+            ForeignAmount = invoice.ForeignAmount?.ToString(CultureInfo.InvariantCulture) ?? "",
+            ExchangeRate = invoice.ExchangeRate?.ToString(CultureInfo.InvariantCulture) ?? "",
             Note = invoice.Note ?? ""
         };
 
@@ -154,27 +148,31 @@ public partial class InvoiceLineViewModel : ViewModelBase
         _isRecalculating = false;
     }
 
-    public InvoiceLine ToDomain() => new()
+    public InvoiceLine ToDomain()
     {
-        Id = Id,
-        PeriodId = PeriodId,
-        IssuedInvoiceId = IssuedInvoiceId,
-        Kind = DerivedKind,
-        CounterpartyId = CounterpartyId,
-        CounterpartyName = CounterpartyName,
-        CounterpartyDic = CounterpartyDic.NullIfWhiteSpace(),
-        EvidenceNumber = EvidenceNumber,
-        TaxableSupplyDate = ParseDate(TaxableSupplyDate),
-        TaxBaseCzk = ParseDecimal(TaxBaseCzk),
-        VatCzk = ParseDecimal(VatCzk),
-        VatRate = ParseVatRate(VatRate),
-        // Skrytý checkbox může držet starou hodnotu – do domény jde jen tam, kde dává smysl.
-        PartialDeduction = PartialDeduction && DerivedKind == InvoiceKind.ReceivedDomesticWithVat,
-        Currency = Currency.NullIfWhiteSpace()?.ToUpperInvariant() ?? "CZK",
-        ForeignAmount = ForeignAmount.NullIfWhiteSpace() is null ? null : ParseDecimal(ForeignAmount),
-        ExchangeRate = ExchangeRate.NullIfWhiteSpace() is null ? null : ParseDecimal(ExchangeRate),
-        Note = Note.NullIfWhiteSpace()
-    };
+        _ = DecimalInput.Parse(GrossCzk);
+        return new InvoiceLine
+        {
+            Id = Id,
+            PeriodId = PeriodId,
+            IssuedInvoiceId = IssuedInvoiceId,
+            Kind = DerivedKind,
+            CounterpartyId = CounterpartyId,
+            CounterpartyName = CounterpartyName,
+            CounterpartyDic = CounterpartyDic.NullIfWhiteSpace(),
+            EvidenceNumber = EvidenceNumber,
+            TaxableSupplyDate = ParseDate(TaxableSupplyDate),
+            TaxBaseCzk = DecimalInput.Parse(TaxBaseCzk),
+            VatCzk = DecimalInput.Parse(VatCzk),
+            VatRate = ParseVatRate(VatRate),
+            // Skrytý checkbox může držet starou hodnotu – do domény jde jen tam, kde dává smysl.
+            PartialDeduction = PartialDeduction && DerivedKind == InvoiceKind.ReceivedDomesticWithVat,
+            Currency = Currency.NullIfWhiteSpace()?.ToUpperInvariant() ?? "CZK",
+            ForeignAmount = ForeignAmount.NullIfWhiteSpace() is null ? null : DecimalInput.Parse(ForeignAmount),
+            ExchangeRate = ExchangeRate.NullIfWhiteSpace() is null ? null : DecimalInput.Parse(ExchangeRate),
+            Note = Note.NullIfWhiteSpace()
+        };
+    }
 
     partial void OnCounterpartyChanged(CounterpartyViewModel? value)
     {
@@ -212,11 +210,11 @@ public partial class InvoiceLineViewModel : ViewModelBase
         CounterpartyId = null;
     }
 
-    // Základ, DPH i částka s DPH jdou zadat libovolně; ostatní dvě se dopočítají podle sazby.
+    // Ze základu nebo celku dopočítáme daň; ruční změna daně zachovává základ.
     // _isRecalculating brání zacyklení, protože každé přepsání zase spustí tyto handlery.
     partial void OnTaxBaseCzkChanged(string value)
     {
-        if (_isRecalculating)
+        if (_isRecalculating || !DecimalInput.TryParse(value, out _))
         {
             return;
         }
@@ -231,32 +229,23 @@ public partial class InvoiceLineViewModel : ViewModelBase
 
     partial void OnVatCzkChanged(string value)
     {
-        if (_isRecalculating)
+        if (_isRecalculating || !DecimalInput.TryParse(value, out _))
         {
             return;
         }
 
         _isRecalculating = true;
         var vat = ParseDecimal(value);
-        var rate = ParseRatePercent(VatRate);
-        if (rate != 0)
-        {
-            var baseCzk = VatCalculator.Money(vat / rate);
-            TaxBaseCzk = Format(baseCzk);
-            GrossCzk = Format(baseCzk + vat);
-        }
-        else
-        {
-            // Při nulové sazbě nelze ze daně dopočítat základ; aktualizujeme aspoň částku s DPH.
-            GrossCzk = Format(ParseDecimal(TaxBaseCzk) + vat);
-        }
+        // Daň z přijatého dokladu může zahrnovat zaokrouhlení nebo omezený nárok.
+        // Ruční oprava daně nesmí přepsat doložený základ.
+        GrossCzk = Format(ParseDecimal(TaxBaseCzk) + vat);
 
         _isRecalculating = false;
     }
 
     partial void OnGrossCzkChanged(string value)
     {
-        if (_isRecalculating)
+        if (_isRecalculating || !DecimalInput.TryParse(value, out _))
         {
             return;
         }
@@ -287,10 +276,10 @@ public partial class InvoiceLineViewModel : ViewModelBase
     private static DateOnly ParseDate(string value)
         => DateOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
             ? parsed
-            : DateOnly.FromDateTime(DateTime.Today);
+            : throw new FormatException($"Neplatné datum: „{value}“. Použijte RRRR-MM-DD.");
 
     private static decimal ParseDecimal(string value)
-        => decimal.TryParse(value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed)
+        => DecimalInput.TryParse(value, out var parsed)
             ? parsed
             : 0m;
 
@@ -314,6 +303,10 @@ public partial class InvoiceLineViewModel : ViewModelBase
         _ => "21"
     };
 
-    private static string KindText(InvoiceKind kind)
-        => kind == InvoiceKind.IssuedDomestic ? "Vydaná" : "Přijatá";
+    private static string KindText(InvoiceKind kind) => kind switch
+    {
+        InvoiceKind.IssuedDomestic => "Vydaná",
+        InvoiceKind.ReverseCharge => "Zahraniční služba (RC)",
+        _ => "Přijatá"
+    };
 }

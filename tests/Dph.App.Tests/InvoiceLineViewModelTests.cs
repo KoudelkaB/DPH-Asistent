@@ -24,12 +24,13 @@ public sealed class InvoiceLineViewModelTests
     }
 
     [Fact]
-    public void Editing_Vat_Back_Computes_Base_And_Gross()
+    public void Editing_Vat_Preserves_Documented_Base_And_Updates_Gross()
     {
-        var line = new InvoiceLineViewModel { VatCzk = "210" };
+        var line = new InvoiceLineViewModel { TaxBaseCzk = "1000" };
+        line.VatCzk = "210.01";
 
         Assert.Equal("1000", line.TaxBaseCzk);
-        Assert.Equal("1210", line.GrossCzk);
+        Assert.Equal("1210.01", line.GrossCzk);
     }
 
     [Fact]
@@ -84,8 +85,10 @@ public sealed class InvoiceLineViewModelTests
     [InlineData("Vydaná", "CZ27082440", "X-1", InvoiceKind.IssuedDomestic)]
     [InlineData("Přijatá", "CZ27082440", "X-1", InvoiceKind.ReceivedDomesticWithVat)]
     [InlineData("Přijatá", "27082440", "X-1", InvoiceKind.ReceivedDomesticWithVat)]
-    [InlineData("Přijatá", "DE811907980", "X-1", InvoiceKind.ReverseCharge)]
-    [InlineData("Přijatá", "", "X-1", InvoiceKind.ReverseCharge)]
+    [InlineData("Přijatá", "DE811907980", "X-1", InvoiceKind.ReceivedDomesticWithVat)]
+    [InlineData("Zahraniční služba (RC)", "DE811907980", "X-1", InvoiceKind.ReverseCharge)]
+    [InlineData("Přijatá", "", "X-1", InvoiceKind.ReceivedDomesticWithVat)]
+    [InlineData("Zahraniční služba (RC)", "", "X-1", InvoiceKind.ReverseCharge)]
     [InlineData("Přijatá", "", "B3", InvoiceKind.ReceivedDomesticWithVat)]
     public void ToDomain_Derives_Kind_From_Selection_Dic_And_Summary_Code(
         string kind, string dic, string evidenceNumber, InvoiceKind expected)
@@ -106,7 +109,7 @@ public sealed class InvoiceLineViewModelTests
         // Skrytý checkbox může držet starou hodnotu – u reverse charge se nesmí propsat do domény.
         var reverseCharge = new InvoiceLineViewModel
         {
-            Kind = "Přijatá",
+            Kind = "Zahraniční služba (RC)",
             CounterpartyDic = "DE811907980",
             PartialDeduction = true
         };

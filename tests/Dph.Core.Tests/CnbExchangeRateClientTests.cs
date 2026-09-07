@@ -5,6 +5,21 @@ namespace Dph.Core.Tests;
 public sealed class CnbExchangeRateClientTests
 {
     [Fact]
+    public void Converts_Rate_For_One_Hundred_Units_Without_Losing_Precision()
+    {
+        var rate = CnbExchangeRateClient.Parse("19.06.2026 #117\nzemě|měna|množství|kód|kurz\nJaponsko|jen|100|JPY|13,123", "JPY");
+        Assert.Equal(0.13123m, rate!.RatePerUnit);
+    }
+
+    [Theory]
+    [InlineData("bad", "1", "20")]
+    [InlineData("19.06.2026", "0", "20")]
+    [InlineData("19.06.2026", "1", "0")]
+    [InlineData("19.06.2026", "1", "-20")]
+    public void Rejects_Invalid_Rate_Data(string date, string units, string value)
+        => Assert.Null(CnbExchangeRateClient.Parse($"{date} #117\nzemě|měna|množství|kód|kurz\nUSA|dolar|{units}|USD|{value}", "USD"));
+
+    [Fact]
     public void Parses_Cnb_Rate_With_Comma_Decimal_Separator()
     {
         const string text = """

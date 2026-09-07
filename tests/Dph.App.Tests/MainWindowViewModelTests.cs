@@ -126,6 +126,180 @@ public sealed class MainWindowViewModelTests
         Assert.Equal("CZ6508000000192000145399", viewModel.Iban);
     }
 
+    [Fact]
+    public async Task Multi_Rate_Document_Can_Be_Saved_Without_False_Duplicate()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        await SeedLineAsync(repository, period, "F1", "Dodavatel", 6000m, 1260m);
+        var second = new InvoiceLine { PeriodId = period.Id, Kind = InvoiceKind.ReceivedDomesticWithVat,
+            EvidenceNumber = "F1", CounterpartyName = "Dodavatel",
+            TaxableSupplyDate = new(2026, 5, 15), VatRate = VatRateKind.Reduced12, TaxBaseCzk = 3000m, VatCzk = 360m };
+        await repository.SaveInvoiceAsync(second);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await WaitForAsync(() => vm.Invoices.Count == 2, "řádky");
+        vm.Invoices.Single(x => x.VatRate == "12").TaxBaseCzk = "3100";
+        await vm.SaveInvoicesCommand.ExecuteAsync(null);
+        Assert.Equal(3100m, (await repository.LoadInvoicesAsync(period.Id)).Single(x => x.VatRate == VatRateKind.Reduced12).TaxBaseCzk);
+    }
+
+    [Fact]
+    public async Task Invalid_Input_Does_Not_Overwrite_Stored_Amount()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        await SeedLineAsync(repository, period, "F1", "Dodavatel", 1000m, 210m);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await WaitForAsync(() => vm.Invoices.Count == 1, "řádky");
+        vm.Invoices[0].TaxBaseCzk = "chyba";
+        await vm.SaveInvoicesCommand.ExecuteAsync(null);
+        Assert.Equal(1000m, Assert.Single(await repository.LoadInvoicesAsync(period.Id)).TaxBaseCzk);
+        Assert.Contains("Neplatné číslo", vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Foreign_Invoice_Is_Not_Inserted_As_Czk()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        vm.Issuing.SelectedInvoice = new IssuedInvoiceViewModel
+        {
+            Number = "EUR1", Currency = "EUR", TaxableSupplyDate = "2026-05-31"
+        };
+        vm.Issuing.SelectedInvoice.Items.Add(new() { UnitPriceCzk = "100" });
+        Assert.False(await vm.Issuing.SaveSelectedInvoiceAsync());
+        Assert.Empty(await repository.LoadInvoicesAsync(period.Id));
+    }
+
+    [Fact]
+    public async Task Applying_Cnb_Rate_Refreshes_Vat_When_Base_Is_Unchanged()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        var row = await SeedLineAsync(repository, period, "F1", "Dodavatel", 1000m, 123m);
+        row.Currency = "EUR";
+        row.ForeignAmount = 40m;
+        await repository.SaveInvoiceAsync(row);
+        var vm = new MainWindowViewModel(repository, new FakeAresClient(), new FixedExchangeRateProvider(), new FakeTaxOfficeCatalog());
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await WaitForAsync(() => vm.Invoices.Count == 1, "řádky");
+        vm.SelectedInvoice = vm.Invoices[0];
+        await vm.ApplyCnbRateCommand.ExecuteAsync(null);
+        Assert.Equal("1000", vm.SelectedInvoice.TaxBaseCzk);
+        Assert.Equal("210", vm.SelectedInvoice.VatCzk);
+        Assert.Equal("1210", vm.SelectedInvoice.GrossCzk);
+        await vm.SaveInvoicesCommand.ExecuteAsync(null);
+        Assert.Equal(210m, Assert.Single(await repository.LoadInvoicesAsync(period.Id)).VatCzk);
+    }
+
+    [Fact]
+    public async Task Preflight_Fails_Before_Export_Dialog_And_Period_Save()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        await SeedLineAsync(repository, period, "F1", "Dodavatel", 5000m, 1050m);
+        var row = new InvoiceLine { PeriodId = period.Id, Kind = InvoiceKind.ReceivedDomesticWithVat,
+            CounterpartyName = "Dodavatel", EvidenceNumber = "F1", TaxableSupplyDate = new(2026, 5, 15),
+            VatRate = VatRateKind.Reduced12, TaxBaseCzk = 5000m, VatCzk = 600m };
+        await repository.SaveInvoiceAsync(row);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await WaitForAsync(() => vm.Invoices.Count == 2, "řádky");
+        var dialogCalled = false;
+        vm.PickExportDirectoryAsync = _ => { dialogCalled = true; return Task.FromResult<string?>(null); };
+        await vm.ExportXmlCommand.ExecuteAsync(null);
+        Assert.False(dialogCalled);
+        Assert.Contains("DIČ", vm.StatusMessage);
+        Assert.Contains("Odpočet:", vm.SummaryText);
+        Assert.Equal("", vm.AmountToPayCopyValue);
+        Assert.Equal(period.SubmissionDate, (await repository.LoadPeriodsAsync()).Single().SubmissionDate);
+    }
+
+    [Fact]
+    public async Task Creating_Period_Does_Not_Insert_Legacy_Zero_Rate_Invoice()
+    {
+        var repository = await CreateRepositoryAsync();
+        await SeedPeriodAsync(repository, 2026, 5);
+        var invoice = new IssuedInvoice { Number = "ZERO1", TaxableSupplyDate = new(2026, 6, 15),
+            Items = [new() { UnitPriceCzk = 500m }, new() { UnitPriceCzk = 1000m, VatRate = VatRateKind.Zero0 }] };
+        await repository.SaveIssuedInvoiceAsync(invoice);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await vm.AddPeriodCommand.ExecuteAsync(null);
+        var period = (await repository.LoadPeriodsAsync()).Single(x => x.Month == 6);
+        Assert.Empty(await repository.LoadInvoicesAsync(period.Id));
+        Assert.Contains("ZERO1", vm.StatusMessage);
+        Assert.Null((await repository.LoadIssuedInvoiceAsync(invoice.Id))!.VatInsertedAt);
+    }
+
+    [Fact]
+    public async Task Saving_Zero_Rate_Invoice_Does_Not_Pollute_Vat_Period()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        vm.Issuing.SelectedInvoice = new IssuedInvoiceViewModel { Number = "ZERO1", TaxableSupplyDate = "2026-05-15" };
+        vm.Issuing.SelectedInvoice.Items.Add(new() { UnitPriceCzk = "1000", VatRate = "0" });
+        Assert.False(await vm.Issuing.SaveSelectedInvoiceAsync());
+        Assert.Empty(await repository.LoadInvoicesAsync(period.Id));
+    }
+
+    [Fact]
+    public async Task Existing_Zero_Rate_Invoice_Can_Save_Address_Without_Entering_Vat()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        var invoice = new IssuedInvoice { Number = "LEGACY0", TaxableSupplyDate = new(2026, 5, 15),
+            Items = [new() { UnitPriceCzk = 1000m, VatRate = VatRateKind.Zero0 }] };
+        await repository.SaveIssuedInvoiceAsync(invoice);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        vm.Issuing.SelectedInvoice = IssuedInvoiceViewModel.FromDomain(invoice);
+        vm.Issuing.SelectedInvoice.CustomerStreet = "Opravená 123";
+
+        Assert.True(await vm.Issuing.SaveSelectedInvoiceAsync());
+
+        var saved = (await repository.LoadIssuedInvoiceAsync(invoice.Id))!;
+        Assert.Equal("Opravená 123", saved.CustomerStreet);
+        Assert.Equal(VatRateKind.Zero0, Assert.Single(saved.Items).VatRate);
+        Assert.Null(saved.VatInsertedAt);
+        Assert.Empty(await repository.LoadInvoicesAsync(period.Id));
+    }
+
+    [Fact]
+    public async Task Legacy_Zero_Rate_Can_Be_Corrected_Without_Losing_Summary()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        var line = await SeedLineAsync(repository, period, "LEGACY", "Dodavatel", 1000m, 0m);
+        line.VatRate = VatRateKind.Zero0;
+        await repository.SaveInvoiceAsync(line);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await WaitForAsync(() => vm.Invoices.Count == 1, "řádky");
+        Assert.Contains("Odpočet:", vm.SummaryText);
+        Assert.Contains("Nelze exportovat:", vm.SummaryText);
+        Assert.Equal("0", vm.Invoices[0].VatRate);
+        vm.Invoices[0].VatRate = "21";
+        await vm.SaveInvoicesCommand.ExecuteAsync(null);
+        Assert.DoesNotContain("Nelze exportovat:", vm.SummaryText);
+        var rows = await repository.LoadInvoicesAsync(period.Id);
+        Assert.Equal(210m, Assert.Single(rows).VatCzk);
+        EpoXmlExporter.ValidateSupportedLines(period, rows);
+        Assert.NotNull(new EpoXmlExporter().ExportControlStatement(new(), period, rows));
+    }
+
+    private sealed class FixedExchangeRateProvider : IExchangeRateProvider
+    {
+        public Task<ExchangeRate?> GetRateAsync(string currencyCode, DateOnly date, CancellationToken cancellationToken = default)
+            => Task.FromResult<ExchangeRate?>(new(date, currencyCode, 1, 25m));
+    }
+
     private static async Task<DphRepository> CreateRepositoryAsync()
     {
         var repository = new DphRepository(Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite"));

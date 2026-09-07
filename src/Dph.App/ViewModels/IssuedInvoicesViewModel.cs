@@ -314,7 +314,24 @@ public partial class IssuedInvoicesViewModel : ViewModelBase
         }
 
         await EnsureInvoiceHydratedAsync(invoice);
-        var domain = invoice.ToDomain();
+        IssuedInvoice domain;
+        try { domain = invoice.ToDomain(); }
+        catch (FormatException exception)
+        {
+            _setStatus(exception.Message);
+            return false;
+        }
+        if (!domain.Currency.Equals("CZK", StringComparison.OrdinalIgnoreCase))
+        {
+            _setStatus("Vystavování faktur podporuje pouze CZK. Pro cizí měnu chybí kurz a vyčíslení české DPH v korunách.");
+            return false;
+        }
+        // Staré faktury lze opravit a uložit; způsobilost pro DPH hlídá i synchronizace.
+        if (domain.Id == 0 && domain.VatEntryError is { } entryError)
+        {
+            _setStatus(entryError);
+            return false;
+        }
         if (string.IsNullOrWhiteSpace(domain.Number))
         {
             _setStatus("Faktura musí mít číslo.");

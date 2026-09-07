@@ -240,7 +240,7 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
-    public void Reverse_Charge_Vat_Is_Computed_From_Reported_Whole_Crown_Bases()
+    public void Reverse_Charge_Uses_Recorded_Tax_And_Preserves_Neutrality()
     {
         var exporter = new EpoXmlExporter();
         var dph = exporter.ExportVatReturn(Subject(), new VatPeriod { Year = 2026, Month = 5 }, new[]
@@ -268,16 +268,16 @@ public sealed class EpoXmlExporterTests
         Assert.Equal("412", veta1.Attribute("p_sl23_e")?.Value);
         Assert.Equal("87", veta1.Attribute("dan_psl23_e")?.Value);
         Assert.Equal("207", veta1.Attribute("p_sl23_z")?.Value);
-        Assert.Equal("43", veta1.Attribute("dan_psl23_z")?.Value);
+        Assert.Equal("44", veta1.Attribute("dan_psl23_z")?.Value);
 
         var veta4 = dph.Descendants("Veta4").Single();
         Assert.Equal("619", veta4.Attribute("nar_zdp23")?.Value);
-        Assert.Equal("130", veta4.Attribute("od_zdp23")?.Value);
-        Assert.Equal("130", veta4.Attribute("odp_sum_nar")?.Value);
+        Assert.Equal("131", veta4.Attribute("od_zdp23")?.Value);
+        Assert.Equal("131", veta4.Attribute("odp_sum_nar")?.Value);
 
         var veta6 = dph.Descendants("Veta6").Single();
-        Assert.Equal("130", veta6.Attribute("dan_zocelk")?.Value);
-        Assert.Equal("130", veta6.Attribute("odp_zocelk")?.Value);
+        Assert.Equal("131", veta6.Attribute("dan_zocelk")?.Value);
+        Assert.Equal("131", veta6.Attribute("odp_zocelk")?.Value);
         Assert.Equal("0", veta6.Attribute("dano_da")?.Value);
     }
 
@@ -411,10 +411,10 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
-    public void Exports_Partial_Deduction_Flag_To_B2()
+    public void Rejects_Partial_Deduction_Without_Enough_Data()
     {
         var exporter = new EpoXmlExporter();
-        var document = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        var error = Assert.Throws<InvalidOperationException>(() => exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
         {
             new InvoiceLine
             {
@@ -426,10 +426,9 @@ public sealed class EpoXmlExporterTests
                 VatCzk = 2_100m,
                 PartialDeduction = true
             }
-        });
+        }));
 
-        var vetaB2 = document.Descendants("VetaB2").Single();
-        Assert.Equal("A", vetaB2.Attribute("pomer")?.Value);
+        Assert.Contains("odpočet", error.Message);
     }
 
     [Fact]
@@ -523,7 +522,7 @@ public sealed class EpoXmlExporterTests
     public void Supplementary_Return_Reports_Only_Differences_And_Row_66()
     {
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         // Beze změny oproti poslednímu podání – v dodatečném přiznání se nesmí objevit.
         var unchangedReceived = new InvoiceLine
         {
@@ -588,7 +587,7 @@ public sealed class EpoXmlExporterTests
     public void Supplementary_Return_For_Lower_Tax_Reports_Negative_Difference()
     {
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         var lastKnown = new[]
         {
             new InvoiceLine
@@ -623,7 +622,7 @@ public sealed class EpoXmlExporterTests
     public void Supplementary_Return_Can_Include_Reason_As_Text_Attachment()
     {
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         var lastKnown = new[]
         {
             new InvoiceLine
@@ -670,7 +669,7 @@ public sealed class EpoXmlExporterTests
     public void Supplementary_Return_Splits_Long_Reason_To_Seventy_Two_Character_Rows()
     {
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         var lastKnown = new[]
         {
             new InvoiceLine
@@ -718,7 +717,7 @@ public sealed class EpoXmlExporterTests
         // musí vykázat samé nuly, ne rozdíl 130 = 87+43. Rozdíl se počítá proti hodnotám skutečně
         // vykázaným v podaném DP, ne proti rekonstrukci z aktuální logiky.
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         var invoices = new[]
         {
             new InvoiceLine
@@ -757,7 +756,7 @@ public sealed class EpoXmlExporterTests
         // Poslední známá daň = řádné + již podané dodatečné. Druhé dodatečné počítá rozdíl proti
         // jejich součtu, takže dva po sobě jdoucí přírůstky +1000 skončí u správné hodnoty.
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         InvoiceLine Issued(decimal baseCzk) => new()
         {
             Kind = InvoiceKind.IssuedDomestic, EvidenceNumber = "F1", CounterpartyDic = "CZ61506133",
@@ -787,7 +786,7 @@ public sealed class EpoXmlExporterTests
     public void Follow_Up_Control_Statement_Has_Discovery_Date_And_Full_Data()
     {
         var exporter = new EpoXmlExporter();
-        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3) };
+        var period = new VatPeriod { Year = 2026, Month = 5, SubmissionDate = new DateOnly(2026, 7, 3), DiscoveryDate = new DateOnly(2026, 7, 3) };
         var kh = exporter.ExportControlStatement(Subject(), period, new[]
         {
             new InvoiceLine

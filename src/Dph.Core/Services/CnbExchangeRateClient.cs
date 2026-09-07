@@ -35,7 +35,8 @@ public sealed class CnbExchangeRateClient(HttpClient httpClient) : IExchangeRate
         }
 
         var headerDate = header.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-        DateOnly.TryParseExact(headerDate, "dd.MM.yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date);
+        if (!DateOnly.TryParseExact(headerDate, "dd.MM.yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+            return null;
 
         _ = reader.ReadLine();
         string? line;
@@ -49,7 +50,8 @@ public sealed class CnbExchangeRateClient(HttpClient httpClient) : IExchangeRate
 
             if (int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var amount)
                 && amount > 0
-                && decimal.TryParse(parts[4].Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var rate))
+                && decimal.TryParse(parts[4].Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var rate)
+                && rate > 0)
             {
                 return new ExchangeRate(date, parts[3], amount, rate);
             }

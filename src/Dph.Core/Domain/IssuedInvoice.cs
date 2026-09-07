@@ -60,6 +60,12 @@ public sealed class IssuedInvoice
     public decimal TotalVatCzk => VatCalculator.Money(Items.Sum(x => x.LineVatCzk));
     public decimal TotalGrossCzk => VatCalculator.Money(TotalBaseCzk + TotalVatCzk);
 
+    public string? VatEntryError => !Currency.Equals("CZK", StringComparison.OrdinalIgnoreCase)
+        ? "Vydanou fakturu v cizí měně nelze automaticky vložit do DPH. Zadejte částky přepočtené na CZK."
+        : Items.Any(x => x.VatRate is not (VatRateKind.Standard21 or VatRateKind.Reduced12))
+            ? $"Faktura {Number}: do evidence DPH lze vložit pouze sazby 21 % a 12 %. Plnění bez daně vyžaduje určení právního režimu."
+            : null;
+
     // Variabilní symbol pro platbu: zadaný, jinak číslice z čísla faktury.
     public string PaymentVariableSymbol
         => string.IsNullOrWhiteSpace(VariableSymbol)

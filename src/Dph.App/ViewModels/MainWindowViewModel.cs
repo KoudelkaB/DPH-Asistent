@@ -534,6 +534,7 @@ public partial class MainWindowViewModel : ViewModelBase
     // aby akce nebyla skryté "založ období a vlož".
     internal async Task<IssuedInvoiceVatUpdateResult> InsertIssuedInvoiceIntoVatAsync(IssuedInvoice invoice)
     {
+        if (invoice.VatEntryError is { } entryError) return new(false, entryError);
         var period = Periods.FirstOrDefault(x => x.Year == invoice.TaxableSupplyDate.Year && x.Month == invoice.TaxableSupplyDate.Month);
         if (period is null)
         {
@@ -603,6 +604,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     internal async Task<IssuedInvoiceVatUpdateResult> SyncIssuedInvoiceWithOpenVatAsync(IssuedInvoice invoice)
     {
+        if (invoice.VatEntryError is { } entryError) return new(false, entryError);
         if (invoice.Id == 0)
         {
             return new(false, "");
@@ -731,6 +733,7 @@ public partial class MainWindowViewModel : ViewModelBase
     // vložených řádků. Nereloaduje – volající si řízne načtení/označení změny sám.
     private async Task<int> InsertIssuedInvoiceLinesAsync(IssuedInvoice invoice, VatPeriod period)
     {
+        if (invoice.VatEntryError is { } entryError) throw new InvalidOperationException(entryError);
         var inserted = 0;
         foreach (var group in invoice.VatRecap())
         {
@@ -836,8 +839,14 @@ public partial class MainWindowViewModel : ViewModelBase
 
         var insertedFromIssued = 0;
         var insertedAt = DateTimeOffset.UtcNow;
+        var skippedIssued = new List<string>();
         foreach (var issued in issuedInvoices)
         {
+            if (issued.VatEntryError is { } entryError)
+            {
+                skippedIssued.Add(entryError);
+                continue;
+            }
             var insertedFromInvoice = await InsertIssuedInvoiceLinesAsync(issued, period);
             insertedFromIssued += insertedFromInvoice;
             if (insertedFromInvoice > 0)
@@ -849,7 +858,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
         await LoadInvoicesAsync();
         Issuing.RefreshVatPeriodStates();
-        StatusMessage = BuildAddPeriodStatus(period, sourcePeriod, copied, issuedInvoices.Count, insertedFromIssued);
+        StatusMessage = BuildAddPeriodStatus(period, sourcePeriod, copied, issuedInvoices.Count - skippedIssued.Count, insertedFromIssued)
+            + (skippedIssued.Count == 0 ? "" : " Nevloženo: " + string.Join(" ", skippedIssued));
     }
 
     private static string BuildAddPeriodStatus(VatPeriod period, VatPeriod? sourcePeriod, int copied, int issuedInvoiceCount, int insertedFromIssued)
@@ -1294,7 +1304,13 @@ public partial class MainWindowViewModel : ViewModelBase
             // Snímek dvojic VM+doména: kolekce Invoices se může během await vyměnit (přepnutí
             // období spustí načtení), a uložené hodnoty se nesmí zapsat do cizích řádků.
             var invoiceViewModels = Invoices.ToArray();
-            var domains = invoiceViewModels.Select(PrepareInvoiceForSave).ToArray();
+            InvoiceLine[] domains;
+            try { domains = invoiceViewModels.Select(PrepareInvoiceForSave).ToArray(); }
+            catch (FormatException exception)
+            {
+                StatusMessage = exception.Message;
+                return false;
+            }
             var validationMessage = await ValidateInvoiceReferencesAsync(domains);
             if (validationMessage is not null)
             {
@@ -1385,12 +1401,7 @@ public partial class MainWindowViewModel : ViewModelBase
         var seen = new Dictionary<string, InvoiceLine>(StringComparer.OrdinalIgnoreCase);
         foreach (var invoice in invoices.Where(ShouldValidateInvoiceReference))
         {
-            var key = InvoiceReferenceKey(invoice);
-            if (key is null)
-            {
-                continue;
-            }
-
+            var key = InvoiceReferenceKey(invoice) + $"|{invoice.VatRate}|{invoice.TaxableSupplyDate:yyyy-MM-dd}";
             if (seen.TryGetValue(key, out var duplicate))
             {
                 return $"Duplicitní doklad v aktuálním období: {invoice.EvidenceNumber} / {InvoiceReferenceSubject(invoice)}. Stejný řádek už je v tabulce jako {duplicate.EvidenceNumber}.";
@@ -1486,7 +1497,18 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var invoice = SelectedInvoice.ToDomain();
+        var target = SelectedInvoice;
+        InvoiceLine invoice;
+        try { invoice = target.ToDomain(); }
+        catch (FormatException exception)
+        {
+            StatusMessage = exception.Message;
+            return;
+        }
+        var originalCurrency = target.Currency;
+        var originalAmount = target.ForeignAmount;
+        var originalDate = target.TaxableSupplyDate;
+        var originalVatRate = target.VatRate;
         if (invoice.Currency.Equals("CZK", StringComparison.OrdinalIgnoreCase) || invoice.ForeignAmount is null)
         {
             StatusMessage = "Pro kurz vyplň cizí měnu a částku.";
@@ -1520,10 +1542,18 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
+        if (!ReferenceEquals(SelectedInvoice, target)
+            || target.Currency != originalCurrency || target.ForeignAmount != originalAmount
+            || target.TaxableSupplyDate != originalDate || target.VatRate != originalVatRate)
+        {
+            StatusMessage = "Výběr nebo údaje dokladu se během načítání kurzu změnily. Načtěte kurz znovu.";
+            return;
+        }
+
         var baseCzk = VatCalculator.Money(invoice.ForeignAmount.Value * rate.RatePerUnit);
-        SelectedInvoice.ExchangeRate = rate.RatePerUnit.ToString("0.####");
-        SelectedInvoice.TaxBaseCzk = baseCzk.ToString("0.##");
-        SelectedInvoice.VatCzk = VatCalculator.Money(baseCzk * VatCalculator.Rate(invoice.VatRate)).ToString("0.##");
+        target.ExchangeRate = rate.RatePerUnit.ToString(CultureInfo.InvariantCulture);
+        target.TaxBaseCzk = baseCzk.ToString("0.##", CultureInfo.InvariantCulture);
+        target.VatCzk = VatCalculator.Money(baseCzk * VatCalculator.Rate(invoice.VatRate)).ToString("0.##", CultureInfo.InvariantCulture);
         QueueInvoicesAutosave();
         StatusMessage = $"Kurz {rate.CurrencyCode}: {rate.RatePerUnit:0.####} CZK";
         UpdateSummary();
@@ -1534,6 +1564,14 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         if (SelectedPeriod is null)
         {
+            return;
+        }
+
+        // Kontrola aktuálních hodnot před dialogy, změnou nastavení a uložením období.
+        try { EpoXmlExporter.ValidateSupportedLines(SelectedPeriod, Invoices.Select(x => x.ToDomain())); }
+        catch (Exception exception) when (exception is FormatException or InvalidOperationException)
+        {
+            StatusMessage = exception.Message;
             return;
         }
 
@@ -1598,11 +1636,33 @@ public partial class MainWindowViewModel : ViewModelBase
         await _repository.SavePeriodAsync(SelectedPeriod);
 
         var invoices = Invoices.Select(x => x.ToDomain()).ToArray();
+        try
+        {
+            EpoXmlExporter.ValidateSupportedLines(SelectedPeriod, invoices);
+        }
+        catch (InvalidOperationException exception)
+        {
+            StatusMessage = exception.Message;
+            return;
+        }
         var prefix = $"{SelectedPeriod.Year:D4}-{SelectedPeriod.Month:D2}";
 
         // dapdph_forma: B = řádné, O = opravné (do lhůty), D = dodatečné (po lhůtě, rozdílově).
         // khdph_forma: B = řádné, O = opravné (do lhůty), N = následné (po lhůtě, kompletní).
         var supplementary = corrective && afterDeadline;
+        if (supplementary)
+        {
+            var dateText = await RequestTextAsync("Den zjištění důvodů opravy",
+                "Zadejte skutečné datum zjištění (dd.MM.yyyy). Toto datum určuje lhůtu pro opravu.",
+                DateTime.Today.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture));
+            if (!DateOnly.TryParseExact(dateText, ["d.M.yyyy", "dd.MM.yyyy", "yyyy-MM-dd"], CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var discoveryDate) || discoveryDate > SelectedPeriod.SubmissionDate)
+            {
+                StatusMessage = "Export zrušen: chybí platný den zjištění důvodů opravy.";
+                return;
+            }
+            SelectedPeriod.DiscoveryDate = discoveryDate;
+        }
         var vatReturnForm = corrective ? (supplementary ? "D" : "O") : "B";
         var controlStatementForm = corrective ? (supplementary ? "N" : "O") : "B";
         // Přípony podle úředního názvu dokumentu: dodatečné přiznání, ale následné kontrolní hlášení.
@@ -1612,7 +1672,13 @@ public partial class MainWindowViewModel : ViewModelBase
         var vatReturnPath = Path.Combine(ExportDirectory, $"{prefix}_DPHDP_{vatReturnSuffix}.xml");
         var controlStatementPath = Path.Combine(ExportDirectory, $"{prefix}_DPHKH_{controlStatementSuffix}.xml");
 
-        var vatReturn = _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices, vatReturnForm, lastKnownReturns);
+        System.Xml.Linq.XDocument vatReturn;
+        try { vatReturn = _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices, vatReturnForm, lastKnownReturns); }
+        catch (InvalidOperationException exception)
+        {
+            StatusMessage = exception.Message;
+            return;
+        }
         // Dodatečné přiznání beze změn (rozdíly jen v KH, např. evidenční číslo dokladu) se
         // nepodává – vygeneruje se pak jen následné kontrolní hlášení.
         var skipEmptySupplementary = supplementary
@@ -1634,12 +1700,19 @@ public partial class MainWindowViewModel : ViewModelBase
             vatReturn = _exporter.ExportVatReturn(TaxSubject, SelectedPeriod, invoices, vatReturnForm, lastKnownReturns, reason);
         }
 
+        System.Xml.Linq.XDocument controlStatement;
+        try { controlStatement = _exporter.ExportControlStatement(TaxSubject, SelectedPeriod, invoices, controlStatementForm); }
+        catch (InvalidOperationException exception)
+        {
+            StatusMessage = exception.Message;
+            return;
+        }
         if (!skipEmptySupplementary)
         {
             vatReturn.Save(vatReturnPath);
         }
 
-        _exporter.ExportControlStatement(TaxSubject, SelectedPeriod, invoices, controlStatementForm).Save(controlStatementPath);
+        controlStatement.Save(controlStatementPath);
         var exportedAt = DateTimeOffset.UtcNow;
         await _repository.MarkPeriodExportedAsync(SelectedPeriod.Id, exportedAt);
         SelectedPeriod.ExportedAt = exportedAt;
@@ -1822,7 +1895,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
         SelectedPeriod = Periods.FirstOrDefault();
         Issuing.RefreshVatPeriodStates();
-        StatusMessage = $"Import hotový. Subjektů: {imported.Counterparties.Count}, období: {imported.Periods.Count}, řádků: {importedInvoiceCount}, přeskočeno: {imported.SkippedFiles.Count}.";
+        StatusMessage = $"Import hotový. Subjektů: {imported.Counterparties.Count}, období: {imported.Periods.Count}, řádků: {importedInvoiceCount}, přeskočeno: {imported.SkippedFiles.Count}."
+            + (imported.Warnings.Count == 0 ? "" : " " + string.Join(" ", imported.Warnings));
     }
 
     private async Task ReloadPeriodsAsync(long selectedPeriodId)
@@ -2283,7 +2357,15 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void UpdateSummary()
     {
-        var domains = Invoices.Select(x => x.ToDomain()).ToArray();
+        InvoiceLine[] domains;
+        try { domains = Invoices.Select(x => x.ToDomain()).ToArray(); }
+        catch (FormatException exception)
+        {
+            SummaryText = exception.Message;
+            AmountToPayText = "Opravte neplatné údaje";
+            AmountToPayCopyValue = "";
+            return;
+        }
         var summary = _calculator.Calculate(domains);
         SummaryText =
             $"Výstup: {summary.DomesticOutputBase:0.##} / {summary.DomesticOutputVat:0.##} Kč | " +
@@ -2292,6 +2374,17 @@ public partial class MainWindowViewModel : ViewModelBase
 
         // Co se reálně platí = vlastní daňová povinnost v celých korunách (ř.64 DP), ne haléřový
         // součet z průběžného výpočtu.
+        try
+        {
+            if (SelectedPeriod is not null) EpoXmlExporter.ValidateSupportedLines(SelectedPeriod, domains);
+        }
+        catch (InvalidOperationException exception)
+        {
+            SummaryText += $" | Nelze exportovat: {exception.Message}";
+            AmountToPayText = "Výsledek vyžaduje doplnění v EPO";
+            AmountToPayCopyValue = "";
+            return;
+        }
         var net = _exporter.ComputeNetTaxWholeCrowns(domains);
         AmountToPayText = net switch
         {

@@ -12,6 +12,8 @@ public sealed class VatPeriod : INotifyPropertyChanged
     public int Year { get; set; }
     public int Month { get; set; }
     public DateOnly SubmissionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    // Vyplňuje se při exportu opravy; není to datum vytvoření XML.
+    public DateOnly? DiscoveryDate { get; set; }
     public string FormType { get; set; } = "B";
 
     public DateTimeOffset? ImportedAt

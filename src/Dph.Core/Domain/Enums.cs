@@ -14,8 +14,7 @@ public enum InvoiceKind
 
     /// <summary>
     /// Tuzemské přijaté plnění s českou DPH od plátce (odpočet ř.40/41; KH oddíl B2/B3).
-    /// Uživatel v UI vybírá jen Vydaná/Přijatá – rozlišení tuzemská vs. reverse charge se
-    /// odvozuje z DIČ dodavatele (viz <see cref="InvoiceKindClassifier"/>).
+    /// Režim volí uživatel podle povahy plnění; DIČ samo o sobě nestačí.
     /// </summary>
     ReceivedDomesticWithVat,
 

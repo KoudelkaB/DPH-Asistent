@@ -563,6 +563,7 @@ public sealed class DphRepository(string databasePath)
             from invoice_lines il
             join periods p on p.id = il.period_id
             where il.id <> $id
+              and (il.period_id <> $period_id or (il.vat_rate = $vat_rate and il.taxable_supply_date = $taxable_supply_date))
               and lower(trim(il.evidence_number)) = lower(trim($evidence_number))
               and case when il.kind = 'IssuedDomestic' then 'Issued' else 'Received' end = $invoice_scope
               and (
@@ -576,6 +577,9 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$id", invoice.Id);
         Add(command, "$evidence_number", invoice.EvidenceNumber);
         Add(command, "$invoice_scope", invoice.Kind.ReferenceScope());
+        Add(command, "$period_id", invoice.PeriodId);
+        Add(command, "$vat_rate", invoice.VatRate.ToString());
+        Add(command, "$taxable_supply_date", invoice.TaxableSupplyDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
         Add(command, "$counterparty_id", invoice.CounterpartyId);
         Add(command, "$counterparty_dic", string.IsNullOrWhiteSpace(invoice.CounterpartyDic) ? null : invoice.CounterpartyDic);
         Add(command, "$counterparty_name", string.IsNullOrWhiteSpace(invoice.CounterpartyName) ? null : invoice.CounterpartyName);

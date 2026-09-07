@@ -340,7 +340,7 @@ public partial class IssuedInvoiceViewModel : ViewModelBase
     private static DateOnly ParseDate(string value)
         => DateOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
             ? parsed
-            : DateOnly.FromDateTime(DateTime.Today);
+            : throw new FormatException($"Neplatné datum: „{value}“. Použijte RRRR-MM-DD.");
 
     private static string Format(decimal value) => value.ToString("0.##", CultureInfo.InvariantCulture);
 }

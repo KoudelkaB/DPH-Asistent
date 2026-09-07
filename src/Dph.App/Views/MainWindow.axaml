@@ -185,12 +185,12 @@
                                               HorizontalScrollBarVisibility="Auto"
                                               VerticalScrollBarVisibility="Auto">
                                     <Grid RowDefinitions="Auto,*" RowSpacing="8" MinWidth="1540">
-                                        <Grid ColumnDefinitions="95,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6">
+                                        <Grid ColumnDefinitions="180,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6">
                                             <TextBlock Text="Typ"/>
                                             <TextBlock Grid.Column="1" Text="Subjekt"/>
                                             <TextBlock Grid.Column="2" Text="DIČ"/>
                                             <TextBlock Grid.Column="3" Text="Režim"
-                                                       ToolTip.Tip="Režim DPH se odvozuje automaticky z DIČ: prefix CZ (nebo jen číslice) = tuzemské plnění, prefix jiného členského státu = reverse charge EU (ř.5/6), prázdné či mimounijní DIČ = reverse charge 3. země (ř.12/13)."/>
+                                                       ToolTip.Tip="Typ plnění zvolte podle dokladu. Přijatá = tuzemské plnění s českou DPH. Zahraniční služba (RC) = služba s místem plnění v ČR a daní přiznávanou příjemcem; DIČ rozlišuje EU / třetí zemi."/>
                                             <TextBlock Grid.Column="4" Text="Doklad"/>
                                             <TextBlock Grid.Column="5" Text="DUZP"/>
                                             <TextBlock Grid.Column="6" Text="Základ"/>
@@ -221,7 +221,7 @@
                                             </ListBox.Styles>
                                             <ListBox.ItemTemplate>
                                                 <DataTemplate x:DataType="vm:InvoiceLineViewModel">
-                                                    <Grid ColumnDefinitions="95,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6" Margin="0,2">
+                                                    <Grid ColumnDefinitions="180,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6" Margin="0,2">
                                                         <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="90"/>
                                                         <Grid Grid.Column="1" ColumnDefinitions="*,34" ColumnSpacing="4">
                                                             <TextBox Text="{Binding CounterpartyName, UpdateSourceTrigger=PropertyChanged}"/>
@@ -237,7 +237,7 @@
                                                             </ComboBox>
                                                         </Grid>
                                                         <TextBox Grid.Column="2" Text="{Binding CounterpartyDic, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        <!-- Režim DPH odvozený z DIČ (tuzemská / RC EU / RC 3. země) – jen ke čtení. -->
+                                                        <!-- Zvolený režim a zařazení RC podle státu registrace dodavatele. -->
                                                         <Border Grid.Column="3" Background="Transparent"
                                                                 ToolTip.Tip="{Binding VatModeTooltip}"
                                                                 VerticalAlignment="Center">

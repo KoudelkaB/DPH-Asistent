@@ -14,6 +14,8 @@ public sealed class InvoicePdfRenderer
 
     public void Render(TaxSubject supplier, IssuedInvoice invoice, string targetPath)
     {
+        if (!invoice.Currency.Equals("CZK", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("PDF daňového dokladu v cizí měně vyžaduje kurz a výši české DPH v CZK; tento režim není podporován.");
         EmbeddedFontResolver.EnsureRegistered();
 
         var document = BuildDocument(supplier, invoice);
