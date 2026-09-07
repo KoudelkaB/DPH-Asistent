@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "DPH Asistent (Debug)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/Dph.App/bin/Debug/net10.0/DphAsistent",
+      "args": [],
+      "cwd": "${workspaceFolder}/src/Dph.App",
+      "console": "internalConsole",
+      "stopAtEntry": false,
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "DPH Asistent (připojit k procesu)",
+      "type": "coreclr",
+      "request": "attach",
+      "processName": "DphAsistent"
+    }
+  ]
+}
