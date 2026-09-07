@@ -140,10 +140,9 @@ public sealed class DphRepository(string databasePath)
         await MigrateAsync(connection, cancellationToken);
     }
 
-    // Migrace se píšou jen mezi vydanými verzemi (git tag v0.1.0 → chystané vydání), ne mezi
-    // jednotlivými commity. Verzi schématu drží "pragma user_version": 0 = čistá DB nebo DB
-    // z verze 0.1.0, 1 = aktuální vydání. Na čisté DB jsou kroky neškodné (žádná data).
-    private const long CurrentSchemaVersion = 1;
+    // Verze schématu se zvyšuje při každé změně struktury, i mezi vydáními.
+    // 0 = původní DB, 1 = vazby a historie faktur, 2 = původní doklad nad limitem KH.
+    private const long CurrentSchemaVersion = 2;
 
     private static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -159,42 +158,51 @@ public sealed class DphRepository(string databasePath)
             return;
         }
 
-        // 0.1.0 → 0.2.0: vazba řádků DPH na vydané faktury, adresa v adresáři, zámek (PDF/DPH)
-        // a denormalizované souhrny vydaných faktur.
-        await EnsureColumnAsync(connection, "invoice_lines", "issued_invoice_id", "integer null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "counterparties", "postal_code", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "pdf_exported_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "vat_inserted_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "pdf_changed_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "vat_changed_at", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "total_base_czk", "text null", cancellationToken);
-        await EnsureColumnAsync(connection, "issued_invoices", "total_vat_czk", "text null", cancellationToken);
-
-        // Data z 0.1.0: řádky přiznání vzniklé z vydaných faktur byly vázané jen shodou čísla
-        // dokladu – doplní se explicitní vazba. Fakturám, které už v nějakém přiznání jsou, se
-        // nastaví zámek vat_inserted_at (0.1.0 znala jen zámek období; přesný čas vložení
-        // neevidovala, použije se čas migrace). Zámek z PDF exportu zpětně zjistit nejde.
-        await ExecuteAsync(connection, """
-            update invoice_lines
-            set issued_invoice_id = (select i.id from issued_invoices i where i.number = invoice_lines.evidence_number)
-            where issued_invoice_id is null
-              and kind = 'IssuedDomestic'
-              and exists (select 1 from issued_invoices i where i.number = invoice_lines.evidence_number)
-            """, cancellationToken);
-
-        await using (var command = connection.CreateCommand())
+        if (version < 1)
         {
-            command.CommandText = """
-                update issued_invoices
-                set vat_inserted_at = $now
-                where vat_inserted_at is null
-                  and id in (select distinct issued_invoice_id from invoice_lines where issued_invoice_id is not null)
-                """;
-            Add(command, "$now", DateTimeOffset.UtcNow.ToString("O"));
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            // 0.1.0 → 0.2.0: vazba řádků DPH na vydané faktury, adresa v adresáři, zámek (PDF/DPH)
+            // a denormalizované souhrny vydaných faktur.
+            await EnsureColumnAsync(connection, "invoice_lines", "issued_invoice_id", "integer null", cancellationToken);
+            await EnsureColumnAsync(connection, "counterparties", "street", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "counterparties", "house_number", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "counterparties", "city", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "counterparties", "postal_code", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "issued_invoices", "pdf_exported_at", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "issued_invoices", "vat_inserted_at", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "issued_invoices", "pdf_changed_at", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "issued_invoices", "vat_changed_at", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "issued_invoices", "total_base_czk", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "issued_invoices", "total_vat_czk", "text null", cancellationToken);
+
+            // Data z 0.1.0: řádky přiznání vzniklé z vydaných faktur byly vázané jen shodou čísla
+            // dokladu – doplní se explicitní vazba. Fakturám, které už v nějakém přiznání jsou, se
+            // nastaví zámek vat_inserted_at (0.1.0 znala jen zámek období; přesný čas vložení
+            // neevidovala, použije se čas migrace). Zámek z PDF exportu zpětně zjistit nejde.
+            await ExecuteAsync(connection, """
+                update invoice_lines
+                set issued_invoice_id = (select i.id from issued_invoices i where i.number = invoice_lines.evidence_number)
+                where issued_invoice_id is null
+                  and kind = 'IssuedDomestic'
+                  and exists (select 1 from issued_invoices i where i.number = invoice_lines.evidence_number)
+                """, cancellationToken);
+
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    update issued_invoices
+                    set vat_inserted_at = $now
+                    where vat_inserted_at is null
+                      and id in (select distinct issued_invoice_id from invoice_lines where issued_invoice_id is not null)
+                    """;
+                Add(command, "$now", DateTimeOffset.UtcNow.ToString("O"));
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+        }
+
+        if (version < 2)
+        {
+            await EnsureColumnAsync(connection, "invoice_lines", "document_above_control_limit", "integer not null default 0", cancellationToken);
         }
 
         await ExecuteAsync(connection, $"pragma user_version = {CurrentSchemaVersion}", cancellationToken);
@@ -466,6 +474,7 @@ public sealed class DphRepository(string databasePath)
                 ExchangeRate = NullableDecimal(reader, "exchange_rate"),
                 VatRate = Enum.Parse<VatRateKind>(Text(reader, "vat_rate")),
                 PartialDeduction = Bool(reader, "partial_deduction"),
+                DocumentAboveControlLimit = Bool(reader, "document_above_control_limit"),
                 Note = NullableText(reader, "note")
             });
         }
@@ -479,14 +488,14 @@ public sealed class DphRepository(string databasePath)
         await using var command = connection.CreateCommand();
         command.CommandText = invoice.Id == 0
             ? """
-              insert into invoice_lines (period_id, issued_invoice_id, kind, counterparty_id, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, foreign_amount, exchange_rate, vat_rate, partial_deduction, note)
-              values ($period_id, $issued_invoice_id, $kind, $counterparty_id, $counterparty_name, $counterparty_dic, $evidence_number, $taxable_supply_date, $tax_base_czk, $vat_czk, $currency, $foreign_amount, $exchange_rate, $vat_rate, $partial_deduction, $note)
+              insert into invoice_lines (period_id, issued_invoice_id, kind, counterparty_id, counterparty_name, counterparty_dic, evidence_number, taxable_supply_date, tax_base_czk, vat_czk, currency, foreign_amount, exchange_rate, vat_rate, partial_deduction, document_above_control_limit, note)
+              values ($period_id, $issued_invoice_id, $kind, $counterparty_id, $counterparty_name, $counterparty_dic, $evidence_number, $taxable_supply_date, $tax_base_czk, $vat_czk, $currency, $foreign_amount, $exchange_rate, $vat_rate, $partial_deduction, $document_above_control_limit, $note)
               returning id
               """
             : """
               update invoice_lines set period_id=$period_id, issued_invoice_id=$issued_invoice_id, kind=$kind, counterparty_id=$counterparty_id, counterparty_name=$counterparty_name, counterparty_dic=$counterparty_dic,
                   evidence_number=$evidence_number, taxable_supply_date=$taxable_supply_date, tax_base_czk=$tax_base_czk, vat_czk=$vat_czk,
-                  currency=$currency, foreign_amount=$foreign_amount, exchange_rate=$exchange_rate, vat_rate=$vat_rate, partial_deduction=$partial_deduction, note=$note
+                  currency=$currency, foreign_amount=$foreign_amount, exchange_rate=$exchange_rate, vat_rate=$vat_rate, partial_deduction=$partial_deduction, document_above_control_limit=$document_above_control_limit, note=$note
               where id=$id
               returning id
               """;
@@ -506,6 +515,7 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$exchange_rate", invoice.ExchangeRate?.ToString(CultureInfo.InvariantCulture));
         Add(command, "$vat_rate", invoice.VatRate.ToString());
         Add(command, "$partial_deduction", invoice.PartialDeduction ? 1 : 0);
+        Add(command, "$document_above_control_limit", invoice.DocumentAboveControlLimit ? 1 : 0);
         Add(command, "$note", invoice.Note);
         var id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? invoice.Id);
         invoice.Id = id;

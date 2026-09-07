@@ -15,6 +15,7 @@ public static class TestAppBuilder
         .UseHeadless(new AvaloniaHeadlessPlatformOptions());
 }
 
+[Collection("Avalonia")]
 public class VatRateComboBoxTests : IDisposable
 {
     private readonly HeadlessUnitTestSession _session = HeadlessUnitTestSession.StartNew(typeof(TestAppBuilder));

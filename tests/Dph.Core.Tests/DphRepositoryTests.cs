@@ -7,6 +7,43 @@ namespace Dph.Core.Tests;
 
 public sealed class DphRepositoryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Upgrades_Schema_1_Without_Repeating_Invoice_History_Migration(bool columnAlreadyExists)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+        var repository = new DphRepository(path);
+        await repository.InitializeAsync();
+        var period = new VatPeriod { Year = 2026, Month = 5 };
+        await repository.SavePeriodAsync(period);
+        var invoice = new IssuedInvoice { Number = "MANUAL", Items = [new() { UnitPriceCzk = 1000m }] };
+        await repository.SaveIssuedInvoiceAsync(invoice);
+        await repository.SaveInvoiceAsync(new()
+        {
+            PeriodId = period.Id, Kind = InvoiceKind.IssuedDomestic, EvidenceNumber = invoice.Number,
+            TaxBaseCzk = 1000m, VatCzk = 210m, DocumentAboveControlLimit = columnAlreadyExists
+        });
+        await using var connection = new SqliteConnection($"Data Source={path}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = (columnAlreadyExists ? "" : "alter table invoice_lines drop column document_above_control_limit;")
+                              + "pragma user_version = 1;";
+        await command.ExecuteNonQueryAsync();
+
+        await repository.InitializeAsync();
+        await repository.InitializeAsync();
+
+        var row = Assert.Single(await repository.LoadInvoicesAsync(period.Id));
+        Assert.Equal(1000m, row.TaxBaseCzk);
+        Assert.Equal(210m, row.VatCzk);
+        Assert.Equal(columnAlreadyExists, row.DocumentAboveControlLimit);
+        Assert.Null(row.IssuedInvoiceId);
+        Assert.Null((await repository.LoadIssuedInvoiceAsync(invoice.Id))!.VatInsertedAt);
+        command.CommandText = "pragma user_version";
+        Assert.Equal(2L, await command.ExecuteScalarAsync());
+    }
+
     [Fact]
     public async Task Migrates_V010_Database_Linking_Vat_Rows_And_Locking_Inserted_Invoices()
     {
@@ -229,12 +266,17 @@ public sealed class DphRepositoryTests
             TaxableSupplyDate = new DateOnly(2026, 5, 15),
             TaxBaseCzk = 20_000m,
             VatCzk = 2_100m,
-            PartialDeduction = true
+            PartialDeduction = true,
+            DocumentAboveControlLimit = true
         });
 
         var loaded = await repository.LoadInvoicesAsync(period.Id);
 
         Assert.True(loaded.Single().PartialDeduction);
+        Assert.True(loaded.Single().DocumentAboveControlLimit);
+        loaded.Single().DocumentAboveControlLimit = false;
+        await repository.SaveInvoiceAsync(loaded.Single());
+        Assert.False((await repository.LoadInvoicesAsync(period.Id)).Single().DocumentAboveControlLimit);
     }
 
     [Fact]

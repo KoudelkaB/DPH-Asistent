@@ -437,7 +437,8 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
                     rows.First().CounterpartyDic,
                     rows.Key.TaxableSupplyDate,
                     [.. rows],
-                    document.Sum(x => x.GrossCzk))))
+                    document.Sum(x => x.GrossCzk),
+                    document.Any(x => x.DocumentAboveControlLimit))))
             .ToList();
 
     private sealed record ControlStatementDocument(
@@ -445,7 +446,8 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         string? Dic,
         DateOnly TaxableSupplyDate,
         IReadOnlyList<InvoiceLine> Lines,
-        decimal GrossCzk);
+        decimal GrossCzk,
+        bool DocumentAboveControlLimit);
 
     private bool IsDetail(ControlStatementDocument document, string summaryCode)
         => IsDetail(document, summaryCode, _definition.ControlStatementDetailLimitCzk);
@@ -453,7 +455,21 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
     private static bool IsDetail(ControlStatementDocument document, string summaryCode, decimal detailLimit)
         => !string.Equals(document.EvidenceNumber.Trim(), summaryCode, StringComparison.OrdinalIgnoreCase)
            && (summaryCode != "A5" || InvoiceKindClassifier.IsCzechDic(document.Dic))
-           && Math.Abs(document.GrossCzk) > detailLimit;
+           && (Math.Abs(document.GrossCzk) > detailLimit
+               || summaryCode == "B3" && document.DocumentAboveControlLimit);
+
+    public decimal ControlStatementDetailLimitCzk => _definition.ControlStatementDetailLimitCzk;
+
+    public sealed record ReceivedControlStatementState(decimal DocumentGrossCzk, bool IsDetail);
+
+    // UI i XML používají stejné seskupení dokladů a stejnou instanci definice formuláře.
+    public IReadOnlyDictionary<InvoiceLine, ReceivedControlStatementState> ReceivedControlStatementStates(IEnumerable<InvoiceLine> lines)
+        => GroupByDocument(lines.ToArray(), InvoiceKind.ReceivedDomesticWithVat)
+            .SelectMany(document => document.Lines.Select(line => new
+            {
+                Line = line,
+                State = new ReceivedControlStatementState(document.GrossCzk, IsDetail(document, "B3"))
+            })).ToDictionary(x => x.Line, x => x.State);
 
     private static void RequireEvidenceNumber(ControlStatementDocument document)
     {
@@ -471,8 +487,6 @@ public sealed class EpoXmlExporter(EpoTaxFormDefinition? definition = null)
         {
             if (!Enum.IsDefined(line.Kind) || line.VatRate is not (VatRateKind.Standard21 or VatRateKind.Reduced12))
                 throw new InvalidOperationException($"Doklad {line.EvidenceNumber}: plnění bez daně vyžaduje určení právního režimu. Export podporuje pouze zdanitelná plnění se sazbou 21 % a 12 %.");
-            if (line.PartialDeduction)
-                throw new InvalidOperationException($"Doklad {line.EvidenceNumber}: poměrný nebo krácený odpočet nelze bezpečně exportovat bez údajů o rozsahu nároku a celkové hodnotě dokladu. Zpracujte jej v EPO.");
         }
         foreach (var document in GroupByDocument(allLines, InvoiceKind.ReceivedDomesticWithVat)
                      .Where(x => IsDetail(x, "B3", resolvedDetailLimit)))

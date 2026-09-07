@@ -17,6 +17,9 @@ public sealed class InvoiceLine
     public decimal? ForeignAmount { get; set; }
     public decimal? ExchangeRate { get; set; }
     public VatRateKind VatRate { get; set; } = VatRateKind.Standard21;
+    // Pro KH B.2, i když uplatňované částky nepřesáhnou limit.
+    public bool DocumentAboveControlLimit { get; set; }
+    // Zadaný základ a daň již obsahují uplatňovaný poměr podle § 75.
     public bool PartialDeduction { get; set; }
     public string? Note { get; set; }
 

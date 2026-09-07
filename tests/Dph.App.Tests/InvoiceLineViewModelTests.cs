@@ -104,6 +104,88 @@ public sealed class InvoiceLineViewModelTests
     }
 
     [Fact]
+    public void Proportion_Is_Independent_Of_Limit_And_Does_Not_Change_Amounts()
+    {
+        var line = InvoiceLineViewModel.FromDomain(new()
+        {
+            Kind = InvoiceKind.ReceivedDomesticWithVat,
+            TaxBaseCzk = 5000m, VatCzk = 1050m,
+            EvidenceNumber = "PART"
+        });
+        Assert.True(line.IsPartialDeductionEnabled);
+        line.DocumentAboveControlLimit = true;
+        Assert.True(line.IsPartialDeductionEnabled);
+        line.PartialDeduction = true;
+        var domain = line.ToDomain();
+        Assert.Equal(5000m, domain.TaxBaseCzk);
+        Assert.Equal(1050m, domain.VatCzk);
+        Assert.True(domain.DocumentAboveControlLimit);
+        Assert.True(domain.PartialDeduction);
+        line.DocumentAboveControlLimit = false;
+        Assert.True(line.IsPartialDeductionEnabled);
+        Assert.True(line.IsPartialDeductionEnabled);
+        line.EvidenceNumber = "B3";
+        Assert.True(line.IsPartialDeductionEnabled);
+        line.Kind = "Zahraniční služba (RC)";
+        Assert.False(line.ShowPartialDeduction);
+        Assert.False(line.ToDomain().DocumentAboveControlLimit);
+    }
+
+    [Theory]
+    [InlineData("9999.99", true, true)]
+    [InlineData("10000", true, true)]
+    [InlineData("10000.01", true, false)]
+    [InlineData("-9999.99", true, true)]
+    [InlineData("-10000", true, true)]
+    [InlineData("100", false, false)]
+    [InlineData("invalid", true, false)]
+    public void Above_Limit_Is_Visible_Only_For_Proportion_Below_Limit(string gross, bool proportion, bool visible)
+    {
+        var line = new InvoiceLineViewModel { GrossCzk = gross, PartialDeduction = proportion };
+        Assert.Equal(visible, line.ShowDocumentAboveControlLimit);
+        Assert.True(line.IsPartialDeductionEnabled);
+        line.DocumentAboveControlLimit = true;
+        Assert.Equal(visible, line.ShowDocumentAboveControlLimit);
+        line.Kind = "Vydaná";
+        Assert.False(line.ShowDocumentAboveControlLimit);
+    }
+
+    [Fact]
+    public void Unticking_Proportion_Clears_Override_And_Exports_Small_Row_As_B3()
+    {
+        var line = new InvoiceLineViewModel { GrossCzk = "3000", PartialDeduction = true, DocumentAboveControlLimit = true };
+        line.PartialDeduction = false;
+        Assert.False(line.DocumentAboveControlLimit);
+        Assert.False(line.ShowDocumentAboveControlLimit);
+        var kh = new Dph.Core.Epo.EpoXmlExporter().ExportControlStatement(new(), new() { Year = 2026, Month = 5 }, [line.ToDomain()]);
+        Assert.Single(kh.Descendants("VetaB3"));
+        Assert.Empty(kh.Descendants("VetaB2"));
+    }
+
+    [Theory]
+    [InlineData("base")]
+    [InlineData("vat")]
+    [InlineData("gross")]
+    [InlineData("rate")]
+    public void Editing_Imported_Nonproportional_Amounts_Releases_Explicit_Detail(string field)
+    {
+        var line = InvoiceLineViewModel.FromDomain(new()
+        {
+            Kind = InvoiceKind.ReceivedDomesticWithVat, TaxBaseCzk = 1000m, VatCzk = 210m,
+            DocumentAboveControlLimit = true
+        });
+        Assert.True(line.ToDomain().DocumentAboveControlLimit);
+        switch (field)
+        {
+            case "base": line.TaxBaseCzk = "2000"; break;
+            case "vat": line.VatCzk = "200"; break;
+            case "gross": line.GrossCzk = "2000"; break;
+            case "rate": line.VatRate = "12"; break;
+        }
+        Assert.False(line.ToDomain().DocumentAboveControlLimit);
+    }
+
+    [Fact]
     public void ToDomain_Drops_Partial_Deduction_Outside_Domestic_Received()
     {
         // Skrytý checkbox může držet starou hodnotu – u reverse charge se nesmí propsat do domény.

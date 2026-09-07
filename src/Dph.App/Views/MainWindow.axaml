@@ -185,21 +185,26 @@
                                               HorizontalScrollBarVisibility="Auto"
                                               VerticalScrollBarVisibility="Auto">
                                     <Grid RowDefinitions="Auto,*" RowSpacing="8" MinWidth="1540">
-                                        <Grid ColumnDefinitions="180,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6">
-                                            <TextBlock Text="Typ"/>
+                                        <Grid ColumnDefinitions="180,180,110,86,115,100,90,70,90,70,80,90,100,220" ColumnSpacing="6">
+                                            <TextBlock Text="Typ" ToolTip.Tip="Daňový režim plnění: vydaná faktura, přijaté tuzemské plnění s českou DPH, nebo zahraniční služba v reverse charge."/>
                                             <TextBlock Grid.Column="1" Text="Subjekt"/>
-                                            <TextBlock Grid.Column="2" Text="DIČ"/>
+                                            <TextBlock Grid.Column="2" Text="DIČ" ToolTip.Tip="Daňové identifikační číslo odběratele nebo dodavatele, včetně předpony země."/>
                                             <TextBlock Grid.Column="3" Text="Režim"
                                                        ToolTip.Tip="Typ plnění zvolte podle dokladu. Přijatá = tuzemské plnění s českou DPH. Zahraniční služba (RC) = služba s místem plnění v ČR a daní přiznávanou příjemcem; DIČ rozlišuje EU / třetí zemi."/>
-                                            <TextBlock Grid.Column="4" Text="Doklad"/>
-                                            <TextBlock Grid.Column="5" Text="DUZP"/>
-                                            <TextBlock Grid.Column="6" Text="Základ"/>
-                                            <TextBlock Grid.Column="7" Text="DPH"/>
-                                            <TextBlock Grid.Column="8" Text="S DPH"/>
-                                            <TextBlock Grid.Column="9" Text="Sazba"/>
-                                            <TextBlock Grid.Column="10" Text="Část."/>
-                                            <TextBlock Grid.Column="11" Text="Měna"/>
-                                            <TextBlock Grid.Column="12" Text="Cizí částka"/>
+                                            <TextBlock Grid.Column="4" Text="Doklad" ToolTip.Tip="Evidenční číslo daňového dokladu. Řádky stejného dokladu a protistrany se pro limit KH posuzují společně."/>
+                                            <TextBlock Grid.Column="5" Text="DUZP" ToolTip.Tip="Datum uskutečnění zdanitelného plnění; u přijatého dokladu datum povinnosti dodavatele přiznat daň."/>
+                                            <TextBlock Grid.Column="6" Text="Základ" ToolTip.Tip="Základ daně v Kč. Při poměrném odpočtu zadejte již uplatňovanou část základu."/>
+                                            <TextBlock Grid.Column="7" Text="DPH" ToolTip.Tip="Částka DPH v Kč. Při poměrném odpočtu zadejte již uplatňovanou část daně."/>
+                                            <TextBlock Grid.Column="8" Text="S DPH" ToolTip.Tip="Součet evidovaného základu a DPH v Kč. Při použití poměru nemusí odpovídat celé původní faktuře."/>
+                                            <TextBlock Grid.Column="9" Text="Sazba" ToolTip.Tip="Sazba DPH použitá pro výpočet daně z tohoto řádku."/>
+                                            <Grid Grid.Column="12" ColumnDefinitions="60,40">
+                                                <TextBlock Text="Poměr" HorizontalAlignment="Center"
+                                                           ToolTip.Tip="Použit poměr podle § 75. Základ a DPH zadávejte již v uplatňované výši; checkbox částky nepřepočítává. Příznak se vykazuje v B.2, v B.3 se neuvádí."/>
+                                                <TextBlock Grid.Column="1" Text="B.2" HorizontalAlignment="Center"
+                                                           ToolTip.Tip="Celková částka původního dokladu přesahuje 10 000 Kč včetně DPH, i když zde uplatňujete nižší částku. Zaškrtnutí zařadí doklad do B.2 kontrolního hlášení. Volba se zobrazí při použití poměru a součtu zadaných částek celého dokladu nejvýše 10 000 Kč včetně DPH."/>
+                                            </Grid>
+                                            <TextBlock Grid.Column="10" Text="Měna" ToolTip.Tip="Měna původního dokladu. Sloupce Základ, DPH a S DPH jsou vždy v Kč."/>
+                                            <TextBlock Grid.Column="11" Text="Cizí částka" ToolTip.Tip="Částka v původní měně pro přepočet kurzem ČNB do základu v Kč."/>
                                             <TextBlock Grid.Column="13" Text="Poznámka"/>
                                         </Grid>
 
@@ -221,7 +226,7 @@
                                             </ListBox.Styles>
                                             <ListBox.ItemTemplate>
                                                 <DataTemplate x:DataType="vm:InvoiceLineViewModel">
-                                                    <Grid ColumnDefinitions="180,180,110,86,115,100,90,70,90,70,58,80,90,220" ColumnSpacing="6" Margin="0,2">
+                                                    <Grid ColumnDefinitions="180,180,110,86,115,100,90,70,90,70,80,90,100,220" ColumnSpacing="6" Margin="0,2">
                                                         <ComboBox ItemsSource="{Binding KindOptions}" SelectedItem="{Binding Kind}" MinWidth="90"/>
                                                         <Grid Grid.Column="1" ColumnDefinitions="*,34" ColumnSpacing="4">
                                                             <TextBox Text="{Binding CounterpartyName, UpdateSourceTrigger=PropertyChanged}"/>
@@ -249,19 +254,19 @@
                                                         <TextBox Grid.Column="7" Text="{Binding VatCzk, UpdateSourceTrigger=PropertyChanged}"/>
                                                         <TextBox Grid.Column="8" Text="{Binding GrossCzk, UpdateSourceTrigger=PropertyChanged}"/>
                                                         <ComboBox Grid.Column="9" ItemsSource="{Binding VatRateOptions}" SelectedItem="{Binding VatRate}"/>
-                                                        <!-- Tooltip na wrapperu: disablovaný CheckBox nepřijímá pointer eventy, takže ToolTip.Tip
-                                                             na něm samotném by se nikdy nezobrazil. Wrapper zůstává enabled. -->
-                                                        <Border Grid.Column="10"
-                                                                IsVisible="{Binding ShowPartialDeduction}"
-                                                                ToolTip.Tip="{Binding PartialDeductionTooltip}"
-                                                                Background="Transparent"
-                                                                HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                            <CheckBox IsChecked="{Binding PartialDeduction}"
+                                                        <Grid Grid.Column="12" ColumnDefinitions="60,40" IsVisible="{Binding ShowPartialDeduction}">
+                                                            <CheckBox Name="ProportionCheckBox" IsChecked="{Binding PartialDeduction}"
                                                                       IsEnabled="{Binding IsPartialDeductionEnabled}"
+                                                                      ToolTip.Tip="{Binding PartialDeductionTooltip}"
                                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                                        </Border>
-                                                        <TextBox Grid.Column="11" Text="{Binding Currency}"/>
-                                                        <TextBox Grid.Column="12" Text="{Binding ForeignAmount}"/>
+                                                            <CheckBox Name="AboveLimitCheckBox" Grid.Column="1"
+                                                                      IsChecked="{Binding IsControlStatementDetail}"
+                                                                      IsVisible="{Binding ShowDocumentAboveControlLimit}"
+                                                                      ToolTip.Tip="{Binding DocumentAboveControlLimitTooltip}"
+                                                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                        </Grid>
+                                                        <TextBox Grid.Column="10" Text="{Binding Currency}"/>
+                                                        <TextBox Grid.Column="11" Text="{Binding ForeignAmount}"/>
                                                         <TextBox Grid.Column="13" Text="{Binding Note}"/>
                                                     </Grid>
                                                 </DataTemplate>

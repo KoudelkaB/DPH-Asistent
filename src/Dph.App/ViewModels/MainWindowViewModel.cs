@@ -2007,7 +2007,10 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnInvoicePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (_isLoadingInvoices || _isSavingInvoices || e.PropertyName is nameof(InvoiceLineViewModel.Id) or nameof(InvoiceLineViewModel.PeriodId))
+        if (_isLoadingInvoices || _isSavingInvoices || e.PropertyName is nameof(InvoiceLineViewModel.Id) or nameof(InvoiceLineViewModel.PeriodId)
+            or nameof(InvoiceLineViewModel.IsPartialDeductionEnabled) or nameof(InvoiceLineViewModel.PartialDeductionTooltip)
+            or nameof(InvoiceLineViewModel.ShowDocumentAboveControlLimit)
+            or nameof(InvoiceLineViewModel.IsControlStatementDetail))
         {
             return;
         }
@@ -2366,6 +2369,9 @@ public partial class MainWindowViewModel : ViewModelBase
             AmountToPayCopyValue = "";
             return;
         }
+        var controlStates = _exporter.ReceivedControlStatementStates(domains);
+        for (var i = 0; i < domains.Length; i++)
+            Invoices[i].SetControlStatementState(controlStates.GetValueOrDefault(domains[i]), _exporter.ControlStatementDetailLimitCzk);
         var summary = _calculator.Calculate(domains);
         SummaryText =
             $"Výstup: {summary.DomesticOutputBase:0.##} / {summary.DomesticOutputVat:0.##} Kč | " +

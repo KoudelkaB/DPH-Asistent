@@ -411,10 +411,10 @@ public sealed class EpoXmlExporterTests
     }
 
     [Fact]
-    public void Rejects_Partial_Deduction_Without_Enough_Data()
+    public void Exports_Entered_Proportional_Amounts_Without_Recalculating()
     {
         var exporter = new EpoXmlExporter();
-        var error = Assert.Throws<InvalidOperationException>(() => exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
+        var document = exporter.ExportControlStatement(Subject(), new VatPeriod { Year = 2026, Month = 6 }, new[]
         {
             new InvoiceLine
             {
@@ -422,13 +422,16 @@ public sealed class EpoXmlExporterTests
                 EvidenceNumber = "INV-POMER",
                 CounterpartyDic = "CZ12345678",
                 TaxableSupplyDate = new DateOnly(2026, 6, 30),
-                TaxBaseCzk = 20_000m,
+                TaxBaseCzk = 10_000m,
                 VatCzk = 2_100m,
                 PartialDeduction = true
             }
-        }));
+        });
 
-        Assert.Contains("odpočet", error.Message);
+        var row = Assert.Single(document.Descendants("VetaB2"));
+        Assert.Equal("A", row.Attribute("pomer")?.Value);
+        Assert.Equal("10000", row.Attribute("zakl_dane1")?.Value);
+        Assert.Equal("2100", row.Attribute("dan1")?.Value);
     }
 
     [Fact]

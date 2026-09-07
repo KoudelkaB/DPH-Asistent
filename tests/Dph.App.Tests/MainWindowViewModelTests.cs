@@ -3,12 +3,88 @@ using Dph.Core.Domain;
 using Dph.Core.Epo;
 using Dph.Core.Persistence;
 using Dph.Core.Services;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Dph.App.Views;
+using Microsoft.Data.Sqlite;
 
 namespace Dph.App.Tests;
 
 // Integrační testy hlavního VM nad skutečnou SQLite v temp souboru; síťové služby jsou falešné.
+[Collection("Avalonia")]
 public sealed class MainWindowViewModelTests
 {
+    [Fact]
+    public async Task Existing_Database_Renders_Invoice_Rows_In_Main_Window()
+    {
+        using var session = HeadlessUnitTestSession.StartNew(typeof(FullAppTestBuilder));
+        await session.Dispatch(async () =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
+            var repository = new DphRepository(path);
+            await repository.InitializeAsync();
+            var period = await SeedPeriodAsync(repository, 2026, 5);
+            await SeedLineAsync(repository, period, "VISIBLE", "Dodavatel", 1000m, 210m);
+            await using (var connection = new SqliteConnection($"Data Source={path}"))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = "alter table invoice_lines drop column document_above_control_limit; pragma user_version=1;";
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var vm = CreateViewModel(repository);
+            await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení starší databáze");
+            var window = new MainWindow { DataContext = vm };
+            try
+            {
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+                var grid = window.GetVisualDescendants().OfType<ListBox>()
+                    .Single(list => ReferenceEquals(list.ItemsSource, vm.Invoices));
+                Assert.Single(grid.Items);
+                var row = Assert.IsType<ListBoxItem>(grid.ContainerFromIndex(0));
+                Assert.True(row.IsVisible);
+                Assert.True(row.Bounds.Height > 0);
+                Assert.Contains(row.GetVisualDescendants().OfType<TextBox>(), box => box.Text == "VISIBLE");
+                var flags = row.GetVisualDescendants().OfType<CheckBox>().ToArray();
+                var proportion = flags.Single(box => box.Name == "ProportionCheckBox");
+                var aboveLimit = flags.Single(box => box.Name == "AboveLimitCheckBox");
+                Assert.Null(proportion.Content);
+                Assert.Null(aboveLimit.Content);
+                Assert.True(proportion.IsEnabled);
+                Assert.False(aboveLimit.IsVisible);
+                proportion.IsChecked = true;
+                Dispatcher.UIThread.RunJobs();
+                Assert.True(aboveLimit.IsVisible);
+                Assert.Equal(proportion.TranslatePoint(default, row)!.Value.Y, aboveLimit.TranslatePoint(default, row)!.Value.Y);
+                Assert.True(aboveLimit.TranslatePoint(default, row)!.Value.X > proportion.TranslatePoint(default, row)!.Value.X);
+                aboveLimit.IsChecked = true;
+                Assert.True(proportion.IsEnabled);
+                proportion.IsChecked = false;
+                Assert.False(aboveLimit.IsVisible);
+                Assert.False(vm.Invoices[0].DocumentAboveControlLimit);
+                proportion.IsChecked = true;
+                vm.Invoices[0].GrossCzk = "10000";
+                Assert.True(aboveLimit.IsVisible);
+                Assert.True(proportion.IsEnabled);
+                var headers = window.GetVisualDescendants().OfType<TextBlock>();
+                Assert.Contains(headers, text => text.Text == "Poměr" && ToolTip.GetTip(text) is not null);
+                Assert.Contains(headers, text => text.Text == "B.2" && ToolTip.GetTip(text) is not null);
+
+            }
+            finally
+            {
+                window.DataContext = null;
+                window.Close();
+            }
+            return true;
+        }, CancellationToken.None);
+    }
+
     [Fact]
     public async Task Switching_Period_Flushes_Pending_Edits_Before_Loading_The_New_Period()
     {
@@ -269,6 +345,35 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(VatRateKind.Zero0, Assert.Single(saved.Items).VatRate);
         Assert.Null(saved.VatInsertedAt);
         Assert.Empty(await repository.LoadInvoicesAsync(period.Id));
+    }
+
+    [Fact]
+    public async Task Proportion_Remains_Editable_After_Amount_And_Limit_Changes()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 5);
+        var first = await SeedLineAsync(repository, period, "MULTI", "Dodavatel", 5000m, 1050m);
+        first.CounterpartyDic = "CZ27082440";
+        await repository.SaveInvoiceAsync(first);
+        var second = await SeedLineAsync(repository, period, "MULTI", "Dodavatel", 5000m, 600m);
+        second.VatRate = VatRateKind.Reduced12;
+        second.CounterpartyDic = "CZ27082440";
+        await repository.SaveInvoiceAsync(second);
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        await WaitForAsync(() => vm.Invoices.Count == 2, "řádky");
+        Assert.All(vm.Invoices, row => Assert.True(row.IsPartialDeductionEnabled));
+        vm.Invoices[0].PartialDeduction = vm.Invoices[1].PartialDeduction = true;
+        Assert.All(vm.Invoices, row => Assert.True(row.IsControlStatementDetail));
+        Assert.All(vm.Invoices, row => Assert.False(row.ShowDocumentAboveControlLimit));
+        vm.Invoices[1].TaxBaseCzk = "100";
+        Assert.All(vm.Invoices, row => Assert.True(row.IsPartialDeductionEnabled));
+        vm.Invoices[0].DocumentAboveControlLimit = true;
+        Assert.All(vm.Invoices, row => Assert.True(row.IsPartialDeductionEnabled));
+        vm.Invoices[0].PartialDeduction = true;
+        await vm.SaveInvoicesCommand.ExecuteAsync(null);
+        Assert.DoesNotContain("Nelze exportovat:", vm.SummaryText);
+        Assert.Contains(await repository.LoadInvoicesAsync(period.Id), row => row.DocumentAboveControlLimit);
     }
 
     [Fact]

@@ -30,6 +30,8 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowPartialDeduction))]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsControlStatementDetail))]
+    [NotifyPropertyChangedFor(nameof(ShowDocumentAboveControlLimit))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     [NotifyPropertyChangedFor(nameof(VatModeText))]
     [NotifyPropertyChangedFor(nameof(VatModeTooltip))]
@@ -41,6 +43,8 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowPartialDeduction))]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsControlStatementDetail))]
+    [NotifyPropertyChangedFor(nameof(ShowDocumentAboveControlLimit))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     [NotifyPropertyChangedFor(nameof(VatModeText))]
     [NotifyPropertyChangedFor(nameof(VatModeTooltip))]
@@ -51,6 +55,8 @@ public partial class InvoiceLineViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowPartialDeduction))]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsControlStatementDetail))]
+    [NotifyPropertyChangedFor(nameof(ShowDocumentAboveControlLimit))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     [NotifyPropertyChangedFor(nameof(VatModeText))]
     [NotifyPropertyChangedFor(nameof(VatModeTooltip))]
@@ -61,11 +67,49 @@ public partial class InvoiceLineViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsPartialDeductionEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsControlStatementDetail))]
+    [NotifyPropertyChangedFor(nameof(ShowDocumentAboveControlLimit))]
     [NotifyPropertyChangedFor(nameof(PartialDeductionTooltip))]
     private string grossCzk = "0";
 
     [ObservableProperty] private string vatRate = "21";
-    [ObservableProperty] private bool partialDeduction;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsControlStatementDetail))]
+    [NotifyPropertyChangedFor(nameof(ShowDocumentAboveControlLimit))]
+    private bool partialDeduction;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsControlStatementDetail))]
+    private bool documentAboveControlLimit;
+    private decimal? _documentGrossCzk;
+    private bool? _documentIsDetail;
+    private decimal _detailLimit = EpoTaxFormDefinition.Current.ControlStatementDetailLimitCzk;
+
+    public void SetControlStatementState(EpoXmlExporter.ReceivedControlStatementState? state, decimal limit)
+    {
+        if (_documentGrossCzk == state?.DocumentGrossCzk && _documentIsDetail == state?.IsDetail && _detailLimit == limit) return;
+        _documentGrossCzk = state?.DocumentGrossCzk;
+        _documentIsDetail = state?.IsDetail;
+        _detailLimit = limit;
+        OnPropertyChanged(nameof(ShowDocumentAboveControlLimit));
+        OnPropertyChanged(nameof(IsControlStatementDetail));
+    }
+
+    // Hodnota checkboxu odráží výsledné zařazení celého dokladu, i když je skrytý.
+    public bool IsControlStatementDetail
+    {
+        get => ShowPartialDeduction && !string.Equals(EvidenceNumber.Trim(), "B3", StringComparison.OrdinalIgnoreCase)
+            && (_documentIsDetail ?? (Math.Abs(ParseDecimal(GrossCzk)) > _detailLimit || DocumentAboveControlLimit));
+        set => DocumentAboveControlLimit = value;
+    }
+
+    partial void OnPartialDeductionChanged(bool value)
+    {
+        if (!value) DocumentAboveControlLimit = false;
+    }
+
+
+    public string DocumentAboveControlLimitTooltip =>
+        $"Zaškrtněte, pokud celková částka původního dokladu přesahuje {EpoTaxFormDefinition.Current.ControlStatementDetailLimitCzk.ToString("N0", CultureInfo.GetCultureInfo("cs-CZ"))} Kč včetně DPH, ale zde evidujete jen část. Rozhoduje o zařazení do B.2. Částky se nemění.";
 
     public InvoiceKind DerivedKind => Kind switch
     {
@@ -93,14 +137,18 @@ public partial class InvoiceLineViewModel : ViewModelBase
               + "Pouze služby s místem plnění v ČR, u kterých přiznává daň příjemce."
     };
 
-    // Checkbox "Část." zobrazujeme jen u přijaté tuzemské faktury – jinde je bezpředmětný.
+    // Checkbox "Poměr" zobrazujeme jen u přijaté tuzemské faktury – jinde je bezpředmětný.
     public bool ShowPartialDeduction => DerivedKind == InvoiceKind.ReceivedDomesticWithVat;
 
-    // Označení nepodporovaného částečného nároku platí bez ohledu na limit KH.
-    public bool IsPartialDeductionEnabled
-        => ShowPartialDeduction;
+    public bool IsPartialDeductionEnabled => ShowPartialDeduction;
 
-    public string PartialDeductionTooltip => "Částečný odpočet: aplikace nemá údaje pro jeho výpočet. Označené doklady blokují export; přiznání dokončete v EPO.";
+    public bool ShowDocumentAboveControlLimit => ShowPartialDeduction && PartialDeduction
+        && DecimalInput.TryParse(GrossCzk, out var gross)
+        && !string.Equals(EvidenceNumber.Trim(), "B3", StringComparison.OrdinalIgnoreCase)
+        && Math.Abs(_documentGrossCzk ?? gross) <= _detailLimit;
+
+    public string PartialDeductionTooltip =>
+        "Použit poměr podle § 75: základ a DPH zadávejte již v uplatňované poměrné výši. Zaškrtnutí částky nepřepočítává; v B.2 nastaví příznak poměru, v B.3 se příznak neuvádí. Nejde o krácení koeficientem podle § 76.";
 
     [ObservableProperty] private string currency = "CZK";
     [ObservableProperty] private string foreignAmount = "";
@@ -122,6 +170,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
             EvidenceNumber = invoice.EvidenceNumber,
             TaxableSupplyDate = invoice.TaxableSupplyDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             PartialDeduction = invoice.PartialDeduction,
+            DocumentAboveControlLimit = invoice.DocumentAboveControlLimit,
             Currency = invoice.Currency,
             ForeignAmount = invoice.ForeignAmount?.ToString(CultureInfo.InvariantCulture) ?? "",
             ExchangeRate = invoice.ExchangeRate?.ToString(CultureInfo.InvariantCulture) ?? "",
@@ -167,6 +216,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
             VatRate = ParseVatRate(VatRate),
             // Skrytý checkbox může držet starou hodnotu – do domény jde jen tam, kde dává smysl.
             PartialDeduction = PartialDeduction && DerivedKind == InvoiceKind.ReceivedDomesticWithVat,
+            DocumentAboveControlLimit = DocumentAboveControlLimit && DerivedKind == InvoiceKind.ReceivedDomesticWithVat,
             Currency = Currency.NullIfWhiteSpace()?.ToUpperInvariant() ?? "CZK",
             ForeignAmount = ForeignAmount.NullIfWhiteSpace() is null ? null : DecimalInput.Parse(ForeignAmount),
             ExchangeRate = ExchangeRate.NullIfWhiteSpace() is null ? null : DecimalInput.Parse(ExchangeRate),
@@ -219,6 +269,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
             return;
         }
 
+        if (!PartialDeduction) DocumentAboveControlLimit = false;
         _isRecalculating = true;
         var baseCzk = ParseDecimal(value);
         var vat = VatCalculator.Money(baseCzk * ParseRatePercent(VatRate));
@@ -234,6 +285,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
             return;
         }
 
+        if (!PartialDeduction) DocumentAboveControlLimit = false;
         _isRecalculating = true;
         var vat = ParseDecimal(value);
         // Daň z přijatého dokladu může zahrnovat zaokrouhlení nebo omezený nárok.
@@ -250,6 +302,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
             return;
         }
 
+        if (!PartialDeduction) DocumentAboveControlLimit = false;
         _isRecalculating = true;
         var gross = ParseDecimal(value);
         var baseCzk = VatCalculator.Money(gross / (1m + ParseRatePercent(VatRate)));
@@ -265,6 +318,7 @@ public partial class InvoiceLineViewModel : ViewModelBase
             return;
         }
 
+        if (!PartialDeduction) DocumentAboveControlLimit = false;
         _isRecalculating = true;
         var baseCzk = ParseDecimal(TaxBaseCzk);
         var vat = VatCalculator.Money(baseCzk * ParseRatePercent(value));

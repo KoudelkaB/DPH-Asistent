@@ -127,6 +127,42 @@ public sealed class EpoXmlImporterTests
         Assert.Equal(VatRateKind.Standard21, Assert.Single(Assert.Single(imported.Periods).Invoices).VatRate);
     }
 
+    [Theory]
+    [InlineData("A", 5000, 1050, true)]
+    [InlineData("N", 5000, 1050, true)]
+    [InlineData("A", 9000, 1000, true)]
+    [InlineData("A", 10000, 2100, false)]
+    [InlineData("N", 10000, 2100, false)]
+    [InlineData("A", -10000, -2100, false)]
+    public void Imported_B2_Preserves_Amounts_And_Only_Necessary_Override(string proportion, int basis, int vat, bool needsOverride)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xml");
+        try
+        {
+            File.WriteAllText(path, $$"""
+                <Pisemnost><DPHKH1 verzePis="03.01">
+                <VetaD mesic="5" rok="2026" d_poddp="20.06.2026"/>
+                <VetaB2 c_evid_dd="PART" dic_dod="27082440" dppd="12.05.2026"
+                        pomer="{{proportion}}" zakl_dane1="{{basis}}" dan1="{{vat}}" />
+                </DPHKH1></Pisemnost>
+                """);
+            var imported = new ImportedEpoData();
+            new EpoXmlImporter().ImportFile(path, imported);
+            var period = Assert.Single(imported.Periods);
+            Assert.Equal(needsOverride, Assert.Single(period.Invoices).DocumentAboveControlLimit);
+            var kh = new EpoXmlExporter().ExportControlStatement(new(), period.Period, period.Invoices);
+            var detail = Assert.Single(kh.Descendants("VetaB2"));
+            Assert.Equal(proportion, detail.Attribute("pomer")?.Value);
+            Assert.Equal(vat.ToString(System.Globalization.CultureInfo.InvariantCulture), detail.Attribute("dan1")?.Value);
+            var taxReturn = new EpoXmlExporter().ExportVatReturn(new(), period.Period, period.Invoices);
+            var input = Assert.Single(taxReturn.Descendants("Veta4"));
+            Assert.Equal(basis.ToString(System.Globalization.CultureInfo.InvariantCulture), input.Attribute("pln23")?.Value);
+            Assert.Equal(vat.ToString(System.Globalization.CultureInfo.InvariantCulture), input.Attribute("odp_tuz23_nar")?.Value);
+            Assert.Empty(kh.Descendants("VetaB3"));
+        }
+        finally { File.Delete(path); }
+    }
+
     [Fact]
     public void Imports_Second_Rate_Columns_As_Separate_Reduced_Rate_Lines()
     {

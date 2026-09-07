@@ -236,6 +236,11 @@ public sealed class EpoXmlImporter
 
         foreach (var element in document.Descendants("VetaB2"))
         {
+            // B.2 pod limitem musí zachovat výslovné zařazení z podaného XML.
+            // Nad limitem stačí částky; trvalý override by po jejich úpravě byl zavádějící.
+            var reportedGross = new[] { "zakl_dane1", "dan1", "zakl_dane2", "dan2" }
+                .Sum(attribute => ParseMoney(Attr(element, attribute)));
+
             AddRateLines(element, period, () => new InvoiceLine
             {
                 Kind = InvoiceKind.ReceivedDomesticWithVat,
@@ -243,6 +248,7 @@ public sealed class EpoXmlImporter
                 CounterpartyName = NormalizeCzechDic(Attr(element, "dic_dod")),
                 EvidenceNumber = Attr(element, "c_evid_dd"),
                 TaxableSupplyDate = ParseDate(Attr(element, "dppd"), period.Period),
+                DocumentAboveControlLimit = Math.Abs(reportedGross) <= EpoTaxFormDefinition.Current.ControlStatementDetailLimitCzk,
                 PartialDeduction = string.Equals(Attr(element, "pomer"), "A", StringComparison.OrdinalIgnoreCase)
             });
         }

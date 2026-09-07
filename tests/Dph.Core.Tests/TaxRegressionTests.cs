@@ -8,6 +8,74 @@ namespace Dph.Core.Tests;
 public sealed class TaxRegressionTests
 {
     private readonly EpoXmlExporter _exporter = new();
+
+    [Fact]
+    public void Control_States_Use_Instance_Limit_And_Whole_Document()
+    {
+        var first = Line(InvoiceKind.ReceivedDomesticWithVat, 7000m, 1000m);
+        var second = Line(InvoiceKind.ReceivedDomesticWithVat, 7000m, 1000m);
+        second.VatRate = VatRateKind.Reduced12;
+        var custom = new EpoXmlExporter(new() { ControlStatementDetailLimitCzk = 20000m });
+        Assert.All(_exporter.ReceivedControlStatementStates([first, second]).Values, state =>
+        {
+            Assert.Equal(16000m, state.DocumentGrossCzk);
+            Assert.True(state.IsDetail);
+        });
+        Assert.All(custom.ReceivedControlStatementStates([first, second]).Values, state => Assert.False(state.IsDetail));
+        Assert.Single(custom.ExportControlStatement(new(), Period(), [first, second]).Descendants("VetaB3"));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void Exact_Limit_With_Explicit_Original_Document_Above_Limit_Is_B2(int sign)
+    {
+        var line = Line(InvoiceKind.ReceivedDomesticWithVat, sign * 9000m, sign * 1000m);
+        line.PartialDeduction = true;
+        line.DocumentAboveControlLimit = true;
+        Assert.True(_exporter.ReceivedControlStatementStates([line])[line].IsDetail);
+        Assert.Single(_exporter.ExportControlStatement(new(), Period(), [line]).Descendants("VetaB2"));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void Proportional_Claim_Below_Limit_Can_Belong_To_Large_Original_Document(int sign)
+    {
+        var line = Line(InvoiceKind.ReceivedDomesticWithVat, sign * 5000m, sign * 1050m);
+        line.PartialDeduction = true;
+        var small = _exporter.ExportControlStatement(new(), Period(), [line]);
+        Assert.Single(small.Descendants("VetaB3"));
+        line.PartialDeduction = false;
+        Assert.True(XNode.DeepEquals(small, _exporter.ExportControlStatement(new(), Period(), [line])));
+        line.PartialDeduction = true;
+        var originalReturn = _exporter.ExportVatReturn(new(), Period(), [line]);
+
+        line.DocumentAboveControlLimit = true;
+        EpoXmlExporter.ValidateSupportedLines(Period(), [line]);
+        var detail = Assert.Single(_exporter.ExportControlStatement(new(), Period(), [line]).Descendants("VetaB2"));
+        Assert.Equal("A", detail.Attribute("pomer")?.Value);
+        Assert.Equal((sign * 5000).ToString(), detail.Attribute("zakl_dane1")?.Value);
+        Assert.Equal((sign * 1050).ToString(), detail.Attribute("dan1")?.Value);
+        Assert.True(XNode.DeepEquals(originalReturn, _exporter.ExportVatReturn(new(), Period(), [line])));
+        line.CounterpartyDic = null;
+        Assert.Throws<InvalidOperationException>(() => EpoXmlExporter.ValidateSupportedLines(Period(), [line]));
+    }
+
+    [Fact]
+    public void Original_Document_Limit_Applies_To_All_Rates()
+    {
+        var first = Line(InvoiceKind.ReceivedDomesticWithVat, 1000m, 210m);
+        var second = Line(InvoiceKind.ReceivedDomesticWithVat, 1000m, 120m);
+        second.VatRate = VatRateKind.Reduced12;
+        first.DocumentAboveControlLimit = true;
+        first.PartialDeduction = second.PartialDeduction = true;
+        var kh = _exporter.ExportControlStatement(new(), Period(), [first, second]);
+        var detail = Assert.Single(kh.Descendants("VetaB2"));
+        Assert.Equal("1000", detail.Attribute("zakl_dane2")?.Value);
+        Assert.Empty(kh.Descendants("VetaB3"));
+        Assert.Equal(2, _exporter.ReceivedControlStatementStates([first, second]).Count);
+    }
     private static VatPeriod Period() => new() { Year = 2026, Month = 5, SubmissionDate = new(2026, 7, 10) };
     private static InvoiceLine Line(InvoiceKind kind, decimal basis, decimal vat, string? dic = "CZ12345678", string number = "F1")
         => new() { Kind = kind, TaxBaseCzk = basis, VatCzk = vat, CounterpartyDic = dic,
