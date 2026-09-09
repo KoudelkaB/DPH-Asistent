@@ -24,7 +24,7 @@
 
     <Grid RowDefinitions="Auto,* ,Auto" Background="#F4F6F8">
         <Border Grid.Row="0" Background="#1F2937" Padding="14,10">
-            <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" VerticalAlignment="Center">
                 <TextBlock Text="DPH Asistent" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
                 <TextBlock Grid.Column="1" Text="{Binding SummaryText}" Foreground="#D1D5DB" Margin="18,0,0,0" VerticalAlignment="Center"/>
                 <Button Grid.Column="2"
@@ -56,6 +56,7 @@
                         Background="#F9FAFB"
                         Foreground="#111827"
                         BorderBrush="#CBD5E1"
+                        Margin="0,0,10,0"
                         Padding="14,6">
                     <Button.Styles>
                         <!-- Bez explicitního pointerover/pressed by se na tmavé liště tlačítko ztratilo. -->
@@ -68,6 +69,32 @@
                             <Setter Property="Background" Value="#D1D5DB"/>
                             <Setter Property="TextElement.Foreground" Value="#111827"/>
                             <Setter Property="BorderBrush" Value="#9CA3AF"/>
+                        </Style>
+                    </Button.Styles>
+                </Button>
+                <Button Grid.Column="4"
+                        Command="{Binding SendToTaxOfficeCommand}"
+                        Content="Odeslat"
+                        Background="#2563EB"
+                        Foreground="White"
+                        BorderBrush="#1D4ED8"
+                        Padding="14,6"
+                        ToolTip.Tip="Odešle exportovaná XML vybraného období datovou schránkou příslušnému finančnímu úřadu a stáhne ZFO zprávy a doručenku. Aktivní, dokud jsou v období neodeslaná XML nebo chybí doručenka.">
+                    <Button.Styles>
+                        <Style Selector="Button:pointerover /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#1D4ED8"/>
+                            <Setter Property="TextElement.Foreground" Value="White"/>
+                            <Setter Property="BorderBrush" Value="#1E40AF"/>
+                        </Style>
+                        <Style Selector="Button:pressed /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#1E40AF"/>
+                            <Setter Property="TextElement.Foreground" Value="White"/>
+                        </Style>
+                        <!-- Neaktivní stav musí být na tmavé liště jasně odlišený. -->
+                        <Style Selector="Button:disabled /template/ ContentPresenter">
+                            <Setter Property="Background" Value="#374151"/>
+                            <Setter Property="TextElement.Foreground" Value="#9CA3AF"/>
+                            <Setter Property="BorderBrush" Value="#4B5563"/>
                         </Style>
                     </Button.Styles>
                 </Button>
@@ -505,7 +532,7 @@
 
             <TabItem Header="Import">
                 <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="14">
-                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="130,*" ColumnSpacing="10" RowSpacing="10">
                         <TextBlock Text="Složka XML" VerticalAlignment="Center"/>
                         <TextBox Grid.Column="1" Text="{Binding ImportDirectory}"/>
                         <Button Grid.Row="1" Grid.Column="1" HorizontalAlignment="Left" Command="{Binding ImportXmlDirectoryCommand}" Content="Importovat XML"/>
@@ -516,6 +543,13 @@
                             <Button Grid.Column="1" Command="{Binding RestoreDatabaseCommand}" Content="Obnovit DB"/>
                         </Grid>
                         <TextBlock Grid.Row="4" Grid.ColumnSpan="2" Text="{Binding DatabasePath, StringFormat='Aktuální DB: {0}'}" Foreground="#6B7280"/>
+                        <TextBlock Grid.Row="5" Text="Datová schránka" VerticalAlignment="Center"/>
+                        <Grid Grid.Row="5" Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                            <Button Command="{Binding ForgetIsdsCredentialsCommand}" Content="Zapomenout přihlášení"
+                                    IsEnabled="{Binding HasStoredIsdsCredentials}"/>
+                        </Grid>
+                        <TextBlock Grid.Row="6" Grid.ColumnSpan="2" TextWrapping="Wrap" Foreground="#6B7280"
+                                   Text="Přihlašovací údaje pro odesílání podání se zadají při prvním odeslání a uloží se zabezpečeně v profilu uživatele. Po změně hesla do datové schránky je smažte tlačítkem výše – při dalším odeslání se zeptáme znovu."/>
                     </Grid>
                 </Border>
             </TabItem>

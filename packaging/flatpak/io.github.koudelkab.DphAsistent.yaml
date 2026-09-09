@@ -23,7 +23,7 @@ finish-args:
   # na "XOpenDisplay failed".
   - --socket=x11
   - --device=dri
-  # ARES, kurzy ČNB a kontrola dostupnosti EPO endpointů.
+  # ARES, kurzy ČNB, číselník úřadů a odesílání podání datovou schránkou (ISDS).
   - --share=network
   # Ukládání PDF faktur a EPO exportů mimo sandbox (volba cesty uživatelem).
   - --filesystem=xdg-documents

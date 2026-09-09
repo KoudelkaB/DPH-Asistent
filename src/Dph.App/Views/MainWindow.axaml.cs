@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Dph.App.ViewModels;
+using Dph.Core.Isds;
 
 namespace Dph.App.Views;
 
@@ -33,6 +34,8 @@ public partial class MainWindow : Window
             viewModel.ConfirmReexportAsync = ConfirmReexportAsync;
             viewModel.RequestTextAsync = RequestTextAsync;
             viewModel.CopyToClipboardAsync = CopyToClipboardAsync;
+            viewModel.RequestIsdsCredentialsAsync = RequestIsdsCredentialsAsync;
+            viewModel.ShowReportAsync = ShowReportAsync;
             viewModel.Issuing.PickPdfTargetAsync = PickPdfTargetAsync;
             viewModel.Issuing.ConfirmAsync = ConfirmAsync;
         }
@@ -158,31 +161,34 @@ public partial class MainWindow : Window
         };
         Grid.SetRow(buttons, 1);
 
+        var text = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            Content = new TextBlock
+            {
+                Text = message,
+                TextWrapping = TextWrapping.Wrap
+            }
+        };
+
         var content = new Grid
         {
             RowDefinitions = new RowDefinitions("*,Auto"),
             Margin = new Thickness(18),
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = message,
-                    TextWrapping = TextWrapping.Wrap,
-                    VerticalAlignment = VerticalAlignment.Center
-                },
-                buttons
-            }
+            RowSpacing = 12,
+            Children = { text, buttons }
         };
 
         var dialog = new Window
         {
             Title = title,
-            Width = 440,
-            Height = 190,
-            MinWidth = 420,
+            Width = 520,
+            // Delší potvrzení (např. seznam odesílaných podání) by se do pevné výšky nevešlo.
+            Height = DialogHeight(message),
+            MinWidth = 460,
             MinHeight = 180,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false,
+            CanResize = true,
             Content = content
         };
 
@@ -190,6 +196,146 @@ public partial class MainWindow : Window
         continueButton.Click += (_, _) => dialog.Close(true);
 
         return await dialog.ShowDialog<bool>(this);
+    }
+
+    // Odhad výšky podle počtu řádků; ScrollViewer dorovná, když se odhad netrefí.
+    private static double DialogHeight(string message)
+    {
+        var lines = message.Split('\n').Sum(line => 1 + line.Length / 70);
+        return Math.Clamp(140 + lines * 22, 190, 560);
+    }
+
+    private async Task ShowReportAsync(string title, string message)
+    {
+        var closeButton = new Button
+        {
+            Content = "Zavřít",
+            MinWidth = 110,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Background = Brushes.Black,
+            Foreground = Brushes.White
+        };
+        Grid.SetRow(closeButton, 1);
+
+        var text = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            Content = new SelectableTextBlock
+            {
+                Text = message,
+                TextWrapping = TextWrapping.Wrap
+            }
+        };
+
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 620,
+            Height = DialogHeight(message),
+            MinWidth = 480,
+            MinHeight = 200,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new Grid
+            {
+                RowDefinitions = new RowDefinitions("*,Auto"),
+                Margin = new Thickness(18),
+                RowSpacing = 12,
+                Children = { text, closeButton }
+            }
+        };
+
+        closeButton.Click += (_, _) => dialog.Close();
+        await dialog.ShowDialog(this);
+    }
+
+    private async Task<IsdsCredentials?> RequestIsdsCredentialsAsync(string title, string message, string defaultLogin)
+    {
+        var loginBox = new TextBox { Text = defaultLogin, PlaceholderText = "Uživatelské jméno" };
+        var passwordBox = new TextBox { PasswordChar = '•', PlaceholderText = "Heslo" };
+        var cancelButton = new Button { Content = "Zrušit", MinWidth = 92 };
+        var continueButton = new Button
+        {
+            Content = "Přihlásit a odeslat",
+            MinWidth = 150,
+            Background = Brushes.Black,
+            Foreground = Brushes.White,
+            IsEnabled = false
+        };
+
+        void UpdateEnabled(object? sender, EventArgs e)
+            => continueButton.IsEnabled = !string.IsNullOrWhiteSpace(loginBox.Text) && !string.IsNullOrEmpty(passwordBox.Text);
+
+        loginBox.TextChanged += UpdateEnabled;
+        passwordBox.TextChanged += UpdateEnabled;
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Children = { cancelButton, continueButton }
+        };
+
+        var fields = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("110,*"),
+            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            ColumnSpacing = 8,
+            RowSpacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "Jméno", VerticalAlignment = VerticalAlignment.Center },
+                loginBox,
+                new TextBlock { Text = "Heslo", VerticalAlignment = VerticalAlignment.Center },
+                passwordBox
+            }
+        };
+        Grid.SetColumn(loginBox, 1);
+        Grid.SetRow(passwordBox, 1);
+        Grid.SetColumn(passwordBox, 1);
+        Grid.SetRow(fields.Children[2], 1);
+
+        var content = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto"),
+            Margin = new Thickness(18),
+            RowSpacing = 12,
+            Children =
+            {
+                new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                fields,
+                new TextBlock
+                {
+                    Text = "Schránky zabezpečené jednorázovým heslem (SMS/TOTP) nebo přihlášením certifikátem aplikace nepodporuje.",
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Brushes.Gray
+                },
+                buttons
+            }
+        };
+        Grid.SetRow(fields, 1);
+        Grid.SetRow((Control)content.Children[2], 2);
+        Grid.SetRow(buttons, 3);
+
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 560,
+            Height = 320,
+            MinWidth = 520,
+            MinHeight = 300,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = content
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(null);
+        continueButton.Click += (_, _) => dialog.Close(new IsdsCredentials(loginBox.Text?.Trim() ?? "", passwordBox.Text ?? ""));
+
+        var result = await dialog.ShowDialog<IsdsCredentials?>(this);
+        // Heslo drží jen návratová hodnota; textové pole ať v paměti nezůstává vyplněné.
+        passwordBox.Text = "";
+        return result;
     }
 
     private async Task<string?> RequestTextAsync(string title, string message, string initialValue)

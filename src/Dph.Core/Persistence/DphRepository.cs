@@ -136,13 +136,31 @@ public sealed class DphRepository(string databasePath)
                 vat_rate text not null,
                 sort_order integer not null default 0
             );
+            create table if not exists epo_submissions (
+                id integer primary key,
+                period_id integer not null,
+                document_kind text not null,
+                form_type text not null,
+                file_path text not null,
+                exported_at text not null,
+                sent_at text null,
+                send_reference text null,
+                send_attempted_at text null,
+                message_id text null,
+                recipient_data_box_id text null,
+                message_zfo_path text null,
+                delivery_zfo_path text null,
+                delivery_fetched_at text null
+            );
+            create index if not exists idx_epo_submissions_period on epo_submissions(period_id);
             """, cancellationToken);
         await MigrateAsync(connection, cancellationToken);
     }
 
     // Verze schématu se zvyšuje při každé změně struktury, i mezi vydáními.
-    // 0 = původní DB, 1 = vazby a historie faktur, 2 = původní doklad nad limitem KH.
-    private const long CurrentSchemaVersion = 2;
+    // 0 = původní DB, 1 = vazby a historie faktur, 2 = původní doklad nad limitem KH,
+    // 3 = evidence odeslání XML datovou schránkou, 4 = značka a čas pokusu o odeslání.
+    private const long CurrentSchemaVersion = 4;
 
     private static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -203,6 +221,19 @@ public sealed class DphRepository(string databasePath)
         if (version < 2)
         {
             await EnsureColumnAsync(connection, "invoice_lines", "document_above_control_limit", "integer not null default 0", cancellationToken);
+        }
+
+        // Verze 3 zavádí epo_submissions (tabulku vytvoří InitializeAsync). Starší exporty se
+        // nedoplňují: soubory ve složce nevypovídají o tom, zda už podání odešlo jinou cestou,
+        // a doplnit je jako „neodeslané“ by svádělo k duplicitnímu podání. Evidují se až exporty
+        // z této a novějších verzí aplikace.
+
+        if (version < 4)
+        {
+            // Sloupce pro rozpoznání nejistého odeslání. Starším řádkům zůstanou prázdné – ty
+            // vznikly ještě bez značky, takže se u nich nejistý stav nemohl zaznamenat.
+            await EnsureColumnAsync(connection, "epo_submissions", "send_reference", "text null", cancellationToken);
+            await EnsureColumnAsync(connection, "epo_submissions", "send_attempted_at", "text null", cancellationToken);
         }
 
         await ExecuteAsync(connection, $"pragma user_version = {CurrentSchemaVersion}", cancellationToken);
@@ -433,6 +464,14 @@ public sealed class DphRepository(string databasePath)
             deleteInvoices.CommandText = "delete from invoice_lines where period_id=$period_id";
             Add(deleteInvoices, "$period_id", periodId);
             await deleteInvoices.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deleteSubmissions = connection.CreateCommand())
+        {
+            deleteSubmissions.Transaction = (SqliteTransaction)transaction;
+            deleteSubmissions.CommandText = "delete from epo_submissions where period_id=$period_id";
+            Add(deleteSubmissions, "$period_id", periodId);
+            await deleteSubmissions.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await using (var deletePeriod = connection.CreateCommand())
@@ -996,6 +1035,234 @@ public sealed class DphRepository(string databasePath)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    // Zaznamená vyexportované XML jako podání čekající na odeslání. Dřívější neodeslaný záznam
+    // téhož souboru se zahodí – řádný re-export soubor přepsal, takže nikdy neodešel. Odeslané
+    // záznamy zůstávají jako historie podání. Záznam s nejistým výsledkem odeslání se ale nemaže:
+    // nese značku, podle které se teprve zjistí, jestli podání u úřadu vzniklo. Bez ní by se
+    // nedalo ověřit a nový záznam by se poslal naslepo znovu.
+    public async Task<long> RecordExportedSubmissionAsync(EpoSubmission submission, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var stale = connection.CreateCommand())
+        {
+            stale.Transaction = (SqliteTransaction)transaction;
+            stale.CommandText = """
+                delete from epo_submissions
+                where period_id=$period_id and file_path=$file_path
+                  and sent_at is null and send_attempted_at is null
+                """;
+            Add(stale, "$period_id", submission.PeriodId);
+            Add(stale, "$file_path", submission.FilePath);
+            await stale.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        long id;
+        await using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = (SqliteTransaction)transaction;
+            insert.CommandText = """
+                insert into epo_submissions (period_id, document_kind, form_type, file_path, exported_at)
+                values ($period_id, $document_kind, $form_type, $file_path, $exported_at)
+                returning id
+                """;
+            Add(insert, "$period_id", submission.PeriodId);
+            Add(insert, "$document_kind", submission.DocumentKind);
+            Add(insert, "$form_type", submission.FormType);
+            Add(insert, "$file_path", submission.FilePath);
+            Add(insert, "$exported_at", submission.ExportedAt.ToString("O"));
+            id = (long)(await insert.ExecuteScalarAsync(cancellationToken) ?? 0L);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        submission.Id = id;
+        return id;
+    }
+
+    public async Task<List<EpoSubmission>> LoadSubmissionsAsync(long periodId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select * from epo_submissions where period_id=$period_id order by exported_at, id";
+        Add(command, "$period_id", periodId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<EpoSubmission>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(new EpoSubmission
+            {
+                Id = reader.GetInt64(reader.GetOrdinal("id")),
+                PeriodId = reader.GetInt64(reader.GetOrdinal("period_id")),
+                DocumentKind = Text(reader, "document_kind"),
+                FormType = Text(reader, "form_type"),
+                FilePath = Text(reader, "file_path"),
+                ExportedAt = ParseDateTimeOffset(Text(reader, "exported_at")) ?? DateTimeOffset.MinValue,
+                SentAt = ParseDateTimeOffset(NullableText(reader, "sent_at")),
+                SendReference = NullableText(reader, "send_reference"),
+                SendAttemptedAt = ParseDateTimeOffset(NullableText(reader, "send_attempted_at")),
+                MessageId = NullableText(reader, "message_id"),
+                RecipientDataBoxId = NullableText(reader, "recipient_data_box_id"),
+                MessageZfoPath = NullableText(reader, "message_zfo_path"),
+                DeliveryZfoPath = NullableText(reader, "delivery_zfo_path"),
+                DeliveryFetchedAt = ParseDateTimeOffset(NullableText(reader, "delivery_fetched_at"))
+            });
+        }
+
+        return items;
+    }
+
+    // Stav odeslání po obdobích pro seznam období a tlačítko Odeslat.
+    public async Task<Dictionary<long, SubmissionState>> LoadSubmissionStatesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select period_id,
+                   sum(case when sent_at is null and send_attempted_at is null then 1 else 0 end) as pending,
+                   sum(case when sent_at is not null then 1 else 0 end) as sent,
+                   sum(case when sent_at is not null and (message_zfo_path is null or delivery_zfo_path is null) then 1 else 0 end) as incomplete,
+                   sum(case when sent_at is null and send_attempted_at is not null then 1 else 0 end) as unknown
+            from epo_submissions
+            group by period_id
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var states = new Dictionary<long, SubmissionState>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            states[reader.GetInt64(0)] = new SubmissionState(
+                (int)reader.GetInt64(1),
+                (int)reader.GetInt64(2),
+                (int)reader.GetInt64(3),
+                (int)reader.GetInt64(4));
+        }
+
+        return states;
+    }
+
+    // Zapíše se těsně před voláním ISDS. Když pokus skončí bez jasného výsledku, značka zůstane
+    // a podání se nesmí odeslat znovu, dokud se zpráva podle ní nedohledá v seznamu odeslaných.
+    public async Task MarkSubmissionAttemptedAsync(
+        long submissionId,
+        string sendReference,
+        DateTimeOffset attemptedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update epo_submissions set send_reference=$send_reference, send_attempted_at=$send_attempted_at where id=$id";
+        Add(command, "$id", submissionId);
+        Add(command, "$send_reference", sendReference);
+        Add(command, "$send_attempted_at", attemptedAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    // Nejistý pokus, o kterém se ověřením zjistilo, že zprávu nevytvořil, a mezitím vznikl novější
+    // export téhož souboru. Starý záznam by jinak odeslal přepsaný obsah ještě jednou.
+    public async Task<bool> DeleteSupersededSubmissionAttemptAsync(long submissionId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            delete from epo_submissions
+            where id=$id and sent_at is null
+              and exists (
+                  select 1 from epo_submissions newer
+                  where newer.period_id = epo_submissions.period_id
+                    and newer.file_path = epo_submissions.file_path
+                    and newer.id > epo_submissions.id
+                    and newer.sent_at is null)
+            """;
+        Add(command, "$id", submissionId);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    // ISDS požadavek prokazatelně odmítl – zpráva nevznikla, podání je zase bez potíží k odeslání.
+    public async Task ClearSubmissionAttemptAsync(long submissionId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "update epo_submissions set send_attempted_at=null where id=$id";
+        Add(command, "$id", submissionId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    // Zapíše se hned po přijetí zprávy ISDS, ještě před stahováním ZFO – i když stahování selže
+    // nebo aplikace spadne, podání se už nikdy nepošle podruhé.
+    // Vrací false, když řádek mezitím zmizel (např. ho smazal souběžný export). Odeslanou zprávu
+    // v takovém případě nesmíme ztratit – volající ji doplní přes RecordSentSubmissionAsync.
+    public async Task<bool> MarkSubmissionSentAsync(
+        long submissionId,
+        DateTimeOffset sentAt,
+        string messageId,
+        string recipientDataBoxId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            update epo_submissions
+            set sent_at=$sent_at, message_id=$message_id, recipient_data_box_id=$recipient_data_box_id, send_attempted_at=null
+            where id=$id
+            """;
+        Add(command, "$id", submissionId);
+        Add(command, "$sent_at", sentAt.ToString("O"));
+        Add(command, "$message_id", messageId);
+        Add(command, "$recipient_data_box_id", recipientDataBoxId);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    // Záchranný zápis odeslaného podání, jehož řádek už v evidenci není. Bez něj by odeslaná
+    // datová zpráva nebyla nikde vedená a podání by se dalo omylem podat znovu.
+    public async Task<long> RecordSentSubmissionAsync(EpoSubmission submission, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            insert into epo_submissions
+                (period_id, document_kind, form_type, file_path, exported_at, sent_at, send_reference, message_id, recipient_data_box_id)
+            values ($period_id, $document_kind, $form_type, $file_path, $exported_at, $sent_at, $send_reference, $message_id, $recipient_data_box_id)
+            returning id
+            """;
+        Add(command, "$period_id", submission.PeriodId);
+        Add(command, "$document_kind", submission.DocumentKind);
+        Add(command, "$form_type", submission.FormType);
+        Add(command, "$file_path", submission.FilePath);
+        Add(command, "$exported_at", submission.ExportedAt.ToString("O"));
+        Add(command, "$sent_at", (submission.SentAt ?? DateTimeOffset.UtcNow).ToString("O"));
+        Add(command, "$send_reference", submission.SendReference);
+        Add(command, "$message_id", submission.MessageId);
+        Add(command, "$recipient_data_box_id", submission.RecipientDataBoxId);
+        var id = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+        submission.Id = id;
+        return id;
+    }
+
+    // Cesty k ZFO se doplňují postupně; null ponechá dosud uloženou hodnotu, aby se opakovaným
+    // dotažením jen chybějící doručenky nezahodila už stažená zpráva.
+    public async Task SaveSubmissionArtifactsAsync(
+        long submissionId,
+        string? messageZfoPath,
+        string? deliveryZfoPath,
+        DateTimeOffset? deliveryFetchedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            update epo_submissions
+            set message_zfo_path=coalesce($message_zfo_path, message_zfo_path),
+                delivery_zfo_path=coalesce($delivery_zfo_path, delivery_zfo_path),
+                delivery_fetched_at=coalesce($delivery_fetched_at, delivery_fetched_at)
+            where id=$id
+            """;
+        Add(command, "$id", submissionId);
+        Add(command, "$message_zfo_path", messageZfoPath);
+        Add(command, "$delivery_zfo_path", deliveryZfoPath);
+        Add(command, "$delivery_fetched_at", deliveryFetchedAt?.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
@@ -1062,3 +1329,5 @@ public sealed record InvoiceReferenceDuplicate(long InvoiceId, int Year, int Mon
 {
     public string PeriodLabel => $"{Month:D2}/{Year:D4}";
 }
+
+public sealed record SubmissionState(int Pending, int Sent, int Incomplete, int Unknown);

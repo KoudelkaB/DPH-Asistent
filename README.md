@@ -24,6 +24,7 @@ Sestavení balíčků a publikace na Flathub/Winget jsou popsané v [PUBLISHING.
 - Podpora cizí měny a dopočtu základu v CZK kurzem ČNB podle DUZP.
 - Adresář odběratelů a dodavatelů s vazbou na doklady.
 - Automatické ukládání řádků dokladů během práce.
+- Odeslání exportovaných XML příslušnému finančnímu úřadu datovou schránkou včetně stažení ZFO odeslané zprávy a doručenky.
 - Uzamčení již podaného (importovaného/exportovaného) období s potvrzením před další úpravou.
 - Rozlišení řádného, opravného a – po lhůtě – dodatečného přiznání a následného kontrolního hlášení.
 - Záloha a obnova lokální databáze.
@@ -55,6 +56,47 @@ Při opakovaném exportu již podaného období se aplikace řídí lhůtou pro 
 - **Po lhůtě** vygeneruje **dodatečné přiznání** (forma „D“, jen rozdíly oproti poslední známé dani na ř. 66, se skutečným datem zjištění, které uživatel vyplní při exportu) a **následné kontrolní hlášení** (forma „N“, kompletní data). Rozdíly se počítají proti hodnotám skutečně vykázaným v naposledy podaném XML; beze změny plnění se dodatečné přiznání nepodává a vznikne jen následné kontrolní hlášení.
 
 Opravné, dodatečné i následné exporty dostávají samostatný název souboru, aby nepřepsaly předchozí podání.
+
+## Odeslání datovou schránkou
+
+Tlačítko **Odeslat** v horní liště pošle exportovaná XML vybraného období příslušnému finančnímu úřadu datovou schránkou (webové služby ISDS) a hned k nim stáhne ZFO odeslané zprávy a doručenku.
+
+- Aplikace eviduje každé vyexportované XML jako podání čekající na odeslání. Tlačítko je aktivní u každého období, které má neodeslaná XML – nebo u kterého ještě chybí stažené ZFO či doručenka. V seznamu období je stav vidět jako příznak `k odeslání`, `chybí doručenka`, nebo `odesláno`.
+- Přiznání a kontrolní hlášení jsou dvě samostatná podání, proto jdou jako **dvě samostatné datové zprávy**, každá s jedním XML v příloze a s věcí, ze které je podání poznat (např. „Řádné přiznání k DPH za 06/2026, DIČ CZ…“).
+- Příjemce se určuje podle finančního úřadu poplatníka podle [seznamu ID kódů orgánů finanční správy ČR](https://financnisprava.gov.cz/cs/dane/dane-elektronicky/datove-schranky/seznam-id-kodu-organu-financni-spravy-cr). Adresátem je vždy datová schránka finančního úřadu (kraje), ne územního pracoviště; územní pracoviště se uvádí jen v XML.
+- ZFO se ukládají vedle odeslaného XML jako `<název>_<ID zprávy>_zprava.zfo` (odeslaná zpráva) a `<název>_<ID zprávy>_dorucenka.zfo` (doručenka). ID zprávy v názvu zajistí, že opakovaný export a odeslání téhož souboru nepřepíše důkaz o dřívějším podání. Pokud ISDS doručenku hned nevydá, podání zůstane označené jako nedokončené a dalším stiskem tlačítka **Odeslat** se jen dotáhne – znovu se neodesílá.
+- Odeslání se do evidence zapíše dřív, než se stahují ZFO. Ani při výpadku sítě nebo pádu aplikace se tedy podání neodešle podruhé.
+
+### Nejisté odeslání
+
+Pokud se spojení přeruší v okamžiku, kdy už zpráva mohla u úřadu vzniknout (výpadek sítě, vypršení časového limitu, chyba serveru 5xx), aplikace podání **neoznačí za neodeslané**. Každá odesílaná zpráva nese jednoznačnou značku v poli „číslo jednací odesílatele“ (`dmSenderRefNumber`), a období dostane příznak `ověřit odeslání`.
+
+Při dalším stisku tlačítka **Odeslat** se nejdřív prohledá seznam odeslaných zpráv v datové schránce:
+
+- **zpráva se značkou se najde** – podání se označí za odeslané a podruhé se neposílá,
+- **nenajde se** – dřívější pokus zprávu nevytvořil a podání se odešle normálně,
+- **ověření samo selže** (síť je pořád nedostupná) – podání se pro jistotu neodešle a zůstane k ověření.
+
+Díky tomu ani ztracená odpověď nevede k tomu, že by u finančního úřadu leželo stejné podání dvakrát. Naproti tomu odmítnutí se stavovým kódem ISDS je jednoznačné – zpráva nevznikla a podání jde rovnou odeslat znovu.
+
+Export a odesílání se nemůžou překrývat – pracují se stejnou evidencí podání a souběh by mohl smazat záznam právě odesílané zprávy. Během odesílání je export zablokovaný a během exportu je neaktivní tlačítko **Odeslat**. Kdyby přesto záznam odeslané zprávy zmizel, aplikace ho doplní zpět, aby o podání nikdy nechyběla stopa.
+
+Dokud u souboru visí neověřený pokus, **neodešle se ani jeho novější export** – šlo by o duplicitní podání téhož dokumentu. Ostatních souborů se to netýká: nejistota u přiznání nezdrží kontrolní hlášení. Dokud období čeká na ověření, je navíc **export nových XML zablokovaný**: nedá se rozhodnout mezi řádným a opravným podáním a nový soubor by přepsal ten, o který jde. Značka pro ověření se nesmaže ani při exportu z jiné cesty – teprve když se ukáže, že pokus zprávu nevytvořil, překonaný záznam zmizí a odešle se novější export.
+- Před odesláním se zobrazí potvrzení se seznamem souborů a adresátem. **Odeslanou datovou zprávu nelze vzít zpět.**
+- Exporty pořízené staršími verzemi aplikace se zpětně neevidují – u nich zůstává tlačítko neaktivní, protože aplikace neví, zda už byly podané jinou cestou. Odesílat lze XML vyexportovaná touto a novějšími verzemi.
+
+### Přihlašovací údaje
+
+Jméno a heslo do datové schránky se zadají při prvním odeslání, ověří se proti ISDS a uloží se do profilu uživatele:
+
+- **Windows** – zašifrované DPAPI klíčem odvozeným od účtu uživatele; soubor nerozšifruje jiný uživatel ani jiný počítač.
+- **Linux a macOS** – zašifrované AES-GCM klíčem v samostatném souboru s právy `0600`. Ochrana zde stojí na právech k souborům v domovském adresáři, tedy na stejné úrovni jako lokální databáze aplikace.
+
+Když ISDS uložené heslo odmítne kdykoli během odesílání – včetně pouhého dotahování doručenek – aplikace ho zahodí a při dalším pokusu se zeptá znovu.
+
+Podporuje se přihlášení jménem a heslem. Schránky zabezpečené jednorázovým heslem (SMS/TOTP) nebo přihlášením certifikátem aplikace neumí – ISDS takové přihlášení odmítne a aplikace to oznámí. Uložené údaje jde smazat na kartě **Import** tlačítkem **Zapomenout přihlášení**; při dalším odeslání se aplikace zeptá znovu. Pokud ISDS uložené heslo odmítne (např. po jeho změně), aplikace ho smaže sama.
+
+Odeslání datové zprávy není potvrzení, že podání prošlo kontrolou EPO. Doručenka dokládá doručení správci daně; věcné přijetí podání ověřte v portálu MOJE daně.
 
 ## Vydané faktury
 
@@ -101,6 +143,7 @@ Data jsou uložená v uživatelském profilu:
 ```text
 <LocalApplicationData>/DphAssistant/dph.sqlite
 <LocalApplicationData>/DphAssistant/exports
+<LocalApplicationData>/DphAssistant/isds-credentials.dat
 ```
 
 Na Linuxu to typicky odpovídá cestě pod `~/.local/share/DphAssistant`.
@@ -132,8 +175,8 @@ Verze aplikace se neudržuje ručně – generuje ji [MinVer](https://github.com
 ## Struktura projektu
 
 - `src/Dph.App` - Avalonia desktopová aplikace a viewmodely.
-- `src/Dph.Core` - doména, výpočty DPH, EPO XML import/export, ARES/ČNB služby, PDF faktury a persistence.
-- `tests/Dph.Core.Tests` - testy výpočtů, importu/exportu, repository, ARES/ČNB pomocných služeb a PDF rendereru.
+- `src/Dph.Core` - doména, výpočty DPH, EPO XML import/export, odesílání datovou schránkou (ISDS), ARES/ČNB služby, PDF faktury a persistence.
+- `tests/Dph.Core.Tests` - testy výpočtů, importu/exportu, odesílání do datové schránky, repository, ARES/ČNB pomocných služeb a PDF rendereru.
 
 ## Licence
 
@@ -148,5 +191,8 @@ Zdroje použité při revizi daňových výpočtů:
 - [Informace GFŘ k Brexitu](https://financnisprava.gov.cz/assets/cs/prilohy/d-seznam-dani/Info-dopady-BREXITu-na-DPH-od-20210101.pdf): Severní Irsko v režimu služeb.
 - [Výpočet a zaokrouhlování DPH](https://financnisprava.gov.cz/cs/financni-sprava/novinky/novinky-2019/vypocet-dph-a-zaokrouhlovani-od-1-10-2019): metody výpočtu daně; aktuální sazby určuje § 47 ZDPH.
 - [Aktuální struktura DPHDP3](https://adisspr.mfcr.cz/dpr/adis/idpr_pub/epo2_info/popis_struktury_detail.faces?zkratka=DPHDP3): pole přiznání a skutečný den zjištění důvodů dodatečného podání.
+- [WSDL webových služeb ISDS](https://www.mojedatovaschranka.cz/static/wsdl/v20/dm_operations.wsdl): rozhraní pro odeslání datové zprávy a stažení podepsané zprávy a doručenky.
+- [WSDL informačních služeb ISDS](https://www.mojedatovaschranka.cz/static/wsdl/v20/dm_info.wsdl): doručenka a seznam odeslaných zpráv (dohledání zprávy po nejistém odeslání).
+- [Seznam ID kódů orgánů finanční správy ČR](https://financnisprava.gov.cz/cs/dane/dane-elektronicky/datove-schranky/seznam-id-kodu-organu-financni-spravy-cr): ID datových schránek finančních úřadů.
 
-Vygenerování XML není odeslání ani potvrzení podání. Historie exportních/importních souborů musí odpovídat skutečně podaným verzím; automatické rozpoznání doručení správci daně aplikace nemá.
+Vygenerování XML samo o sobě není podání. Podání vzniká až odesláním – z aplikace datovou schránkou (viz [Odeslání datovou schránkou](#odeslání-datovou-schránkou)), nebo ručně přes portál MOJE daně. Historie exportních/importních souborů musí odpovídat skutečně podaným verzím; u XML podaných mimo aplikaci nemá aplikace jak doručení rozpoznat.

@@ -41,7 +41,7 @@ public sealed class DphRepositoryTests
         Assert.Null(row.IssuedInvoiceId);
         Assert.Null((await repository.LoadIssuedInvoiceAsync(invoice.Id))!.VatInsertedAt);
         command.CommandText = "pragma user_version";
-        Assert.Equal(2L, await command.ExecuteScalarAsync());
+        Assert.Equal(4L, await command.ExecuteScalarAsync());
     }
 
     [Fact]

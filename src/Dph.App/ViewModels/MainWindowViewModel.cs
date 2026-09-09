@@ -8,6 +8,7 @@ using Dph.Core.Calculations;
 using Dph.Core.Domain;
 using Dph.Core.Epo;
 using Dph.Core.Invoicing;
+using Dph.Core.Isds;
 using Dph.Core.Persistence;
 using Dph.Core.Services;
 
@@ -25,6 +26,9 @@ public partial class MainWindowViewModel : ViewModelBase
     private readonly IAresClient _aresClient;
     private readonly IExchangeRateProvider _exchangeRateProvider;
     private readonly ITaxOfficeCatalog _taxOfficeCatalog;
+    private readonly IIsdsClient _isdsClient;
+    private readonly IIsdsCredentialStore _credentialStore;
+    private readonly EpoSubmissionService _submissionService;
     private static readonly TaxOffice EmptyTaxOffice = new("", "(nevyplněno)");
     private IReadOnlyList<TaxOfficeWorkplace> _allWorkplaces = TaxOfficeDirectory.Workplaces;
     private bool _liveTaxOfficeCatalogLoaded;
@@ -56,6 +60,17 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private string amountToPayText = "Zaplatit: 0 Kč";
     [ObservableProperty] private string amountToPayCopyValue = "0";
 
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SendToTaxOfficeCommand))]
+    private bool isSendingToTaxOffice;
+
+    // Export a odesílání si sahají na tytéž záznamy podání. Kdyby běžely současně, mohl by export
+    // smazat řádek, který právě odchází, a odeslaná zpráva by se neměla kam zapsat – podání by pak
+    // vypadalo jako neodeslané a šlo by k úřadu podruhé.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SendToTaxOfficeCommand))]
+    private bool isExportingXml;
+
     private static readonly NumberFormatInfo CzkFormat = new() { NumberGroupSeparator = " ", NumberDecimalDigits = 0 };
 
     public ObservableCollection<VatPeriod> Periods { get; } = [];
@@ -78,6 +93,11 @@ public partial class MainWindowViewModel : ViewModelBase
     public Func<string, string, string, Task<string?>> RequestTextAsync { get; set; } =
         (_, _, _) => Task.FromResult<string?>(null);
     public Func<string, Task> CopyToClipboardAsync { get; set; } = _ => Task.CompletedTask;
+    // Vrací přihlašovací údaje do datové schránky, nebo null při zrušení.
+    public Func<string, string, string, Task<IsdsCredentials?>> RequestIsdsCredentialsAsync { get; set; } =
+        (_, _, _) => Task.FromResult<IsdsCredentials?>(null);
+    // Vypíše delší protokol (výsledek odeslání), který se do stavového řádku nevejde.
+    public Func<string, string, Task> ShowReportAsync { get; set; } = (_, _) => Task.CompletedTask;
 
     public string[] CounterpartyRoleOptions { get; } =
     [
@@ -91,7 +111,10 @@ public partial class MainWindowViewModel : ViewModelBase
             new DphRepository(ApplicationPaths.DatabasePath),
             new AresClient(CreateHttpClient()),
             new CnbExchangeRateClient(CreateHttpClient()),
-            new MfcrTaxOfficeCatalog(CreateHttpClient()))
+            new MfcrTaxOfficeCatalog(CreateHttpClient()),
+            // Odeslání s přílohami a stažení ZFO trvá déle než dotaz do ARES/ČNB.
+            new IsdsClient(new HttpClient { Timeout = TimeSpan.FromMinutes(2) }),
+            new IsdsCredentialStore())
     {
     }
 
@@ -101,12 +124,17 @@ public partial class MainWindowViewModel : ViewModelBase
         DphRepository repository,
         IAresClient aresClient,
         IExchangeRateProvider exchangeRateProvider,
-        ITaxOfficeCatalog taxOfficeCatalog)
+        ITaxOfficeCatalog taxOfficeCatalog,
+        IIsdsClient isdsClient,
+        IIsdsCredentialStore credentialStore)
     {
         _repository = repository;
         _aresClient = aresClient;
         _exchangeRateProvider = exchangeRateProvider;
         _taxOfficeCatalog = taxOfficeCatalog;
+        _isdsClient = isdsClient;
+        _credentialStore = credentialStore;
+        _submissionService = new EpoSubmissionService(isdsClient, repository);
         Issuing = new IssuedInvoicesViewModel(
             _repository,
             _aresClient,
@@ -390,7 +418,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnSelectedPeriodStateChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(VatPeriod.IsLockedByHistory) or nameof(VatPeriod.HasPendingChanges))
+        if (e.PropertyName is nameof(VatPeriod.IsLockedByHistory) or nameof(VatPeriod.HasPendingChanges) or nameof(VatPeriod.CanSubmit))
         {
             RaisePeriodEditabilityChanged();
         }
@@ -402,6 +430,7 @@ public partial class MainWindowViewModel : ViewModelBase
         OnPropertyChanged(nameof(ShowPeriodStatusBanner));
         OnPropertyChanged(nameof(ShowPeriodUnlockButton));
         OnPropertyChanged(nameof(SelectedPeriodStatusText));
+        SendToTaxOfficeCommand.NotifyCanExecuteChanged();
     }
 
     [RelayCommand]
@@ -457,6 +486,8 @@ public partial class MainWindowViewModel : ViewModelBase
             {
                 Periods.Add(period);
             }
+
+            await RefreshSubmissionStatesAsync();
 
             if (Periods.Count == 0)
             {
@@ -1567,6 +1598,38 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
+        if (IsSendingToTaxOffice)
+        {
+            StatusMessage = "Export zrušen: právě probíhá odesílání do datové schránky. Počkejte, až doběhne.";
+            return;
+        }
+
+        // Dokud není jasné, zda předchozí podání odešlo, nedává další export smysl: nejde rozhodnout
+        // mezi řádným a opravným a nový soubor by přepsal ten, u kterého se čeká na ověření.
+        if (SelectedPeriod.UnknownSubmissionCount > 0)
+        {
+            StatusMessage = "Export zrušen: u tohoto období není jisté, zda se předchozí podání odeslalo. Nejdřív to ověřte tlačítkem Odeslat.";
+            return;
+        }
+
+        IsExportingXml = true;
+        try
+        {
+            await ExportXmlCoreAsync();
+        }
+        finally
+        {
+            IsExportingXml = false;
+        }
+    }
+
+    private async Task ExportXmlCoreAsync()
+    {
+        if (SelectedPeriod is null)
+        {
+            return;
+        }
+
         // Kontrola aktuálních hodnot před dialogy, změnou nastavení a uložením období.
         try { EpoXmlExporter.ValidateSupportedLines(SelectedPeriod, Invoices.Select(x => x.ToDomain())); }
         catch (Exception exception) when (exception is FormatException or InvalidOperationException)
@@ -1714,6 +1777,16 @@ public partial class MainWindowViewModel : ViewModelBase
 
         controlStatement.Save(controlStatementPath);
         var exportedAt = DateTimeOffset.UtcNow;
+
+        // Vyexportovaná XML se evidují jako podání čekající na odeslání datovou schránkou.
+        if (!skipEmptySupplementary)
+        {
+            await RecordExportedSubmissionAsync(SelectedPeriod.Id, "DPHDP", vatReturnForm, vatReturnPath, exportedAt);
+        }
+
+        await RecordExportedSubmissionAsync(SelectedPeriod.Id, "DPHKH", controlStatementForm, controlStatementPath, exportedAt);
+        await RefreshSubmissionStatesAsync();
+
         await _repository.MarkPeriodExportedAsync(SelectedPeriod.Id, exportedAt);
         SelectedPeriod.ExportedAt = exportedAt;
         SelectedPeriod.ChangedAt = null; // export odráží aktuální stav – odznak „změna“ mizí
@@ -1726,6 +1799,239 @@ public partial class MainWindowViewModel : ViewModelBase
                 ? $"Dodatečné přiznání a následné KH: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}"
                 : $"{(corrective ? "Opravné" : "Řádné")} přiznání: {Path.GetFileName(vatReturnPath)} a {Path.GetFileName(controlStatementPath)} do {ExportDirectory}";
     }
+
+    // ─────────────────────────── Odeslání datovou schránkou ───────────────────────────
+
+    public bool CanSendToTaxOffice => !IsSendingToTaxOffice && !IsExportingXml && SelectedPeriod is { CanSubmit: true };
+
+    private Task RecordExportedSubmissionAsync(long periodId, string documentKind, string formType, string filePath, DateTimeOffset exportedAt)
+        => _repository.RecordExportedSubmissionAsync(new EpoSubmission
+        {
+            PeriodId = periodId,
+            DocumentKind = documentKind,
+            FormType = formType,
+            FilePath = filePath,
+            ExportedAt = exportedAt
+        });
+
+    // Stav odeslání se drží na období, aby seznam období rovnou ukazoval, kde ještě něco čeká.
+    private async Task RefreshSubmissionStatesAsync()
+    {
+        var states = await _repository.LoadSubmissionStatesAsync();
+        foreach (var period in Periods)
+        {
+            var state = states.GetValueOrDefault(period.Id) ?? new SubmissionState(0, 0, 0, 0);
+            period.PendingSubmissionCount = state.Pending;
+            period.SentSubmissionCount = state.Sent;
+            period.IncompleteSubmissionCount = state.Incomplete;
+            period.UnknownSubmissionCount = state.Unknown;
+        }
+
+        RaisePeriodEditabilityChanged();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanSendToTaxOffice))]
+    private async Task SendToTaxOfficeAsync()
+    {
+        var period = SelectedPeriod;
+        if (period is null)
+        {
+            return;
+        }
+
+        // Příznak se zvedá ještě před načtením seznamu podání. Mezi načtením a odesláním se čeká
+        // na dialogy a na ověření přihlášení – kdyby v té době proběhl export, vyměnil by záznamy
+        // pod rukama: služba by odeslala ty načtené a nové by zůstaly jako neodeslané a šly
+        // k úřadu podruhé.
+        IsSendingToTaxOffice = true;
+        try
+        {
+            await SendToTaxOfficeCoreAsync(period);
+        }
+        finally
+        {
+            IsSendingToTaxOffice = false;
+            await RefreshSubmissionStatesAsync();
+        }
+    }
+
+    private async Task SendToTaxOfficeCoreAsync(VatPeriod period)
+    {
+        var submissions = await _repository.LoadSubmissionsAsync(period.Id);
+        // Nejistá podání se neposílají, jen se ověřuje, zda dřívější pokus přece jen prošel.
+        var unresolved = submissions.Where(x => x.IsSendOutcomeUnknown).ToArray();
+        var pending = submissions.Where(x => !x.IsSent && !x.IsSendOutcomeUnknown).ToArray();
+        // Odeslaná podání bez ZFO nebo doručenky – ISDS je vydá až s odstupem, dotáhnou se teď.
+        var incomplete = submissions.Where(x => x.HasMissingArtifacts).ToArray();
+        var work = unresolved.Concat(pending).Concat(incomplete).ToArray();
+        if (work.Length == 0)
+        {
+            StatusMessage = $"Období {period.Year:D4}-{period.Month:D2}: není co odesílat.";
+            return;
+        }
+
+        var recipient = TaxOfficeDataBoxes.For(TaxSubject.TaxOfficeCode);
+        if (recipient is null)
+        {
+            StatusMessage = string.IsNullOrWhiteSpace(TaxSubject.TaxOfficeCode)
+                ? "Odeslání zrušeno: u poplatníka není vybraný finanční úřad."
+                : $"Odeslání zrušeno: pro finanční úřad {TaxSubject.TaxOfficeCode} není v aplikaci známé ID datové schránky.";
+            return;
+        }
+
+        var officeName = TaxOffices.FirstOrDefault(x => x.Code == TaxSubject.TaxOfficeCode)?.Name ?? "příslušný finanční úřad";
+        if (pending.Length > 0 || unresolved.Length > 0)
+        {
+            var lines = new List<string>();
+            if (pending.Length > 0)
+            {
+                lines.Add($"Odeslat {pending.Length} podání za období {period.Year:D4}-{period.Month:D2} příjemci");
+                lines.Add($"{officeName} (datová schránka {recipient}):");
+                lines.AddRange(pending.Select(x => $"• {x.FileName} – {x.FormTitle} {x.DocumentTitle}"));
+            }
+
+            if (unresolved.Length > 0)
+            {
+                if (lines.Count > 0)
+                {
+                    lines.Add("");
+                }
+
+                // Nejistá podání se nejdřív dohledají v odeslaných zprávách; poslat se můžou až
+                // tehdy, když se ukáže, že dřívější pokus zprávu nevytvořil.
+                lines.Add($"U {unresolved.Length} podání se dřív ztratila odpověď z datové schránky. Nejdřív se ověří,");
+                lines.Add("zda už odešla, a znovu se pošlou jen ta, která u úřadu nejsou:");
+                lines.AddRange(unresolved.Select(x => $"• {x.FileName} – {x.FormTitle} {x.DocumentTitle}"));
+            }
+
+            lines.Add("");
+            lines.Add("Každé podání jde jako samostatná datová zpráva. Odeslanou datovou zprávu nelze vzít zpět.");
+
+            var confirmed = await ConfirmAsync("Odeslat podání datovou schránkou", string.Join(Environment.NewLine, lines));
+            if (!confirmed)
+            {
+                StatusMessage = "Odeslání zrušeno.";
+                return;
+            }
+        }
+
+        var credentials = _credentialStore.Load()
+            ?? await RequestAndStoreCredentialsAsync(
+                $"Zadejte přihlašovací údaje do datové schránky, ze které se podání odešle na {officeName}. Uloží se zabezpečeně v profilu uživatele a příště se už nezadávají.",
+                "");
+        if (credentials is null)
+        {
+            StatusMessage = "Odeslání zrušeno: chybí přihlašovací údaje do datové schránky.";
+            return;
+        }
+
+        StatusMessage = pending.Length > 0 || unresolved.Length > 0
+            ? $"Odesílám {pending.Length + unresolved.Length} podání do datové schránky…"
+            : "Stahuji chybějící ZFO a doručenky…";
+        EpoSendReport? report = null;
+        try
+        {
+            report = await _submissionService.SendAsync(credentials, TaxSubject, period, work, recipient);
+        }
+        catch (IsdsException exception) when (exception.IsAuthenticationFailure)
+        {
+            // Uložené heslo je neplatné (změna hesla, expirace) – ať se příště zeptáme znovu.
+            _credentialStore.Clear();
+            OnPropertyChanged(nameof(HasStoredIsdsCredentials));
+            StatusMessage = $"Odeslání selhalo: {exception.Message}";
+        }
+        catch (IsdsException exception)
+        {
+            StatusMessage = $"Odeslání selhalo: {exception.Message}";
+        }
+        catch (IOException exception)
+        {
+            StatusMessage = $"Odeslání selhalo při práci se soubory: {exception.Message}";
+        }
+
+        if (report is null)
+        {
+            return;
+        }
+
+        var summary = new List<string>();
+        if (report.Sent > 0)
+        {
+            summary.Add($"odesláno {report.Sent}");
+        }
+
+        if (report.ArtifactsCompleted > 0)
+        {
+            summary.Add($"staženo ZFO/doručenek u {report.ArtifactsCompleted} podání");
+        }
+
+        if (report.Unresolved > 0)
+        {
+            summary.Add($"nejisté odeslání u {report.Unresolved} – nutné ověřit");
+        }
+
+        if (report.Blocked > 0)
+        {
+            summary.Add($"odloženo {report.Blocked} kvůli neověřenému staršímu podání");
+        }
+
+        if (report.Failed > 0)
+        {
+            summary.Add($"neodesláno {report.Failed}");
+        }
+
+        StatusMessage = summary.Count == 0
+            ? $"Období {period.Year:D4}-{period.Month:D2}: nic nového k odeslání."
+            : $"Období {period.Year:D4}-{period.Month:D2}: {string.Join(", ", summary)}.";
+
+        // Detaily (ID zpráv, důvody selhání) se do stavového řádku nevejdou.
+        if (report.Messages.Count > 0)
+        {
+            await ShowReportAsync(
+                report.Failed > 0 || report.Unresolved > 0 || report.Blocked > 0
+                    ? "Odeslání skončilo s chybami"
+                    : "Výsledek odeslání",
+                string.Join(Environment.NewLine, report.Messages));
+        }
+    }
+
+    // Ověří zadané údaje voláním ISDS a teprve platné uloží – ať se neuloží překlep, se kterým by
+    // opakované odesílání jen zbytečně bušilo do účtu.
+    private async Task<IsdsCredentials?> RequestAndStoreCredentialsAsync(string message, string defaultLogin)
+    {
+        var entered = await RequestIsdsCredentialsAsync("Přihlášení do datové schránky", message, defaultLogin);
+        if (entered is null || string.IsNullOrWhiteSpace(entered.Login) || string.IsNullOrEmpty(entered.Password))
+        {
+            return null;
+        }
+
+        try
+        {
+            var owner = await _isdsClient.GetOwnerAsync(entered);
+            _credentialStore.Save(entered);
+            OnPropertyChanged(nameof(HasStoredIsdsCredentials));
+            StatusMessage = string.IsNullOrWhiteSpace(owner.Name)
+                ? $"Přihlášeno do datové schránky {owner.DataBoxId}."
+                : $"Přihlášeno do datové schránky {owner.DataBoxId} ({owner.Name}).";
+            return entered;
+        }
+        catch (IsdsException exception)
+        {
+            StatusMessage = $"Přihlášení do datové schránky se nepovedlo: {exception.Message}";
+            return null;
+        }
+    }
+
+    // Smaže uložené přihlašovací údaje – po změně hesla nebo při přechodu na jinou schránku.
+    [RelayCommand]
+    private void ForgetIsdsCredentials()
+    {
+        _credentialStore.Clear();
+        StatusMessage = "Uložené přihlašovací údaje do datové schránky byly smazané.";
+        OnPropertyChanged(nameof(HasStoredIsdsCredentials));
+    }
+
+    public bool HasStoredIsdsCredentials => _credentialStore.HasCredentials;
 
     private static long SupplementaryTaxDifference(System.Xml.Linq.XDocument vatReturn)
     {

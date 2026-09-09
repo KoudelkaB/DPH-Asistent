@@ -260,7 +260,8 @@ public sealed class MainWindowViewModelTests
         row.Currency = "EUR";
         row.ForeignAmount = 40m;
         await repository.SaveInvoiceAsync(row);
-        var vm = new MainWindowViewModel(repository, new FakeAresClient(), new FixedExchangeRateProvider(), new FakeTaxOfficeCatalog());
+        var vm = new MainWindowViewModel(repository, new FakeAresClient(), new FixedExchangeRateProvider(), new FakeTaxOfficeCatalog(),
+            new FakeIsdsClient(), new InMemoryCredentialStore());
         await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
         await WaitForAsync(() => vm.Invoices.Count == 1, "řádky");
         vm.SelectedInvoice = vm.Invoices[0];
@@ -445,7 +446,10 @@ public sealed class MainWindowViewModelTests
     }
 
     private static MainWindowViewModel CreateViewModel(DphRepository repository)
-        => new(repository, new FakeAresClient(), new FakeExchangeRateProvider(), new FakeTaxOfficeCatalog());
+        => CreateViewModel(repository, new FakeIsdsClient(), new InMemoryCredentialStore());
+
+    private static MainWindowViewModel CreateViewModel(DphRepository repository, FakeIsdsClient isdsClient, InMemoryCredentialStore credentialStore)
+        => new(repository, new FakeAresClient(), new FakeExchangeRateProvider(), new FakeTaxOfficeCatalog(), isdsClient, credentialStore);
 
     private static Task WaitForAsync(Func<bool> condition, string description)
         => WaitForAsync(() => Task.FromResult(condition()), description);
