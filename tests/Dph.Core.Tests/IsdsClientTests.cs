@@ -437,6 +437,88 @@ public sealed class IsdsClientTests
         Assert.Contains("Internal error", exception.Message);
     }
 
+    // ─── Vyhledání schránky adresáta (FindDataBox2, rozhraní v30) ───
+
+    [Fact]
+    public async Task Find_data_box_returns_the_owner_of_the_recipient_box()
+    {
+        var handler = new StubHandler(Ok("""
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v30">
+              <p:dbResults>
+                <p:dbOwnerInfo>
+                  <p:dbID>2p2n5ad</p:dbID>
+                  <p:dbType>OVM</p:dbType>
+                  <p:firmName>Finanční úřad pro hlavní město Prahu</p:firmName>
+                  <p:adStreet>Štěpánská</p:adStreet>
+                  <p:adNumberInStreet>28</p:adNumberInStreet>
+                  <p:adNumberInMunicipality>619</p:adNumberInMunicipality>
+                  <p:adCity>Praha 1</p:adCity>
+                  <p:adZipCode>11233</p:adZipCode>
+                  <p:dbState>1</p:dbState>
+                </p:dbOwnerInfo>
+              </p:dbResults>
+              <p:dbStatus><p:dbStatusCode>0000</p:dbStatusCode><p:dbStatusMessage>Provedeno</p:dbStatusMessage></p:dbStatus>
+            </p:FindDataBox2Response>
+            """));
+        var client = new IsdsClient(new HttpClient(handler));
+
+        var info = await client.FindDataBoxAsync(new IsdsCredentials("uzivatel", "tajne"), "2p2n5ad");
+
+        Assert.NotNull(info);
+        Assert.Equal("2p2n5ad", info!.DataBoxId);
+        Assert.Equal("Finanční úřad pro hlavní město Prahu", info.Name);
+        Assert.Equal("Štěpánská 619/28, 11233 Praha 1", info.Address);
+        Assert.Equal("OVM", info.BoxType);
+        Assert.True(info.IsAccessible);
+
+        // Dotaz jde na rozhraní vyhledávání a nese hledané ID.
+        Assert.Equal("https://ws1.datovka.gov.cz/DS/df", handler.RequestUri!.ToString());
+        XNamespace search = "http://isds.czechpoint.cz/v30";
+        Assert.Equal("2p2n5ad", XDocument.Parse(handler.RequestBody!).Descendants(search + "dbID").Single().Value);
+    }
+
+    [Fact]
+    public async Task Find_data_box_reports_a_box_that_cannot_receive_messages()
+    {
+        var handler = new StubHandler(Ok("""
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v30">
+              <p:dbResults>
+                <p:dbOwnerInfo>
+                  <p:dbID>abc1234</p:dbID>
+                  <p:dbType>FO</p:dbType>
+                  <p:pnGivenNames>Jan</p:pnGivenNames>
+                  <p:pnLastName>Novák</p:pnLastName>
+                  <p:dbState>3</p:dbState>
+                </p:dbOwnerInfo>
+              </p:dbResults>
+              <p:dbStatus><p:dbStatusCode>0000</p:dbStatusCode></p:dbStatus>
+            </p:FindDataBox2Response>
+            """));
+        var client = new IsdsClient(new HttpClient(handler));
+
+        var info = await client.FindDataBoxAsync(new IsdsCredentials("uzivatel", "tajne"), "abc1234");
+
+        Assert.Equal("Jan Novák", info!.Name);
+        Assert.False(info.IsAccessible);
+    }
+
+    [Fact]
+    public async Task Unknown_data_box_is_not_an_error()
+    {
+        var handler = new StubHandler(Ok("""
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v30">
+              <p:dbResults/>
+              <p:dbStatus>
+                <p:dbStatusCode>0002</p:dbStatusCode>
+                <p:dbStatusMessage>Podmínkám neodpovídá žádná datová schránka.</p:dbStatusMessage>
+              </p:dbStatus>
+            </p:FindDataBox2Response>
+            """));
+        var client = new IsdsClient(new HttpClient(handler));
+
+        Assert.Null(await client.FindDataBoxAsync(new IsdsCredentials("uzivatel", "tajne"), "xxxxxxx"));
+    }
+
     private static HttpResponseMessage Ok(string body) => new(HttpStatusCode.OK)
     {
         Content = new StringContent($"""

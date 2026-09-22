@@ -10,12 +10,16 @@ public sealed class EpoSubmissionServiceTests
 {
     private static readonly IsdsCredentials Credentials = new("uzivatel", "heslo");
 
+    // Prodlevy mezi pokusy o stažení doručenky se v testech nečekají.
+    private static EpoSubmissionService CreateService(IIsdsClient client, DphRepository repository)
+        => new(client, repository, (_, _) => Task.CompletedTask);
+
     [Fact]
     public async Task Sends_each_xml_as_its_own_message_and_stores_zfo_next_to_it()
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient();
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         var report = await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
@@ -59,7 +63,7 @@ public sealed class EpoSubmissionServiceTests
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient();
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         var reloaded = await context.Repository.LoadSubmissionsAsync(context.Period.Id);
@@ -74,7 +78,7 @@ public sealed class EpoSubmissionServiceTests
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient { SignedSentError = new IsdsException("Zpráva ještě není k dispozici", "1219") };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         var report = await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
@@ -97,7 +101,7 @@ public sealed class EpoSubmissionServiceTests
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient { SignedSentError = new IsdsException("zatím ne") };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         client.SignedSentError = null;
@@ -118,7 +122,7 @@ public sealed class EpoSubmissionServiceTests
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient { FailFirstCreate = new IsdsException("Neplatné XML", "1214") };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         var report = await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
@@ -137,7 +141,7 @@ public sealed class EpoSubmissionServiceTests
         {
             FailFirstCreate = new IsdsException("Neplatné heslo", "401") { IsAuthenticationFailure = true }
         };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         await Assert.ThrowsAsync<IsdsException>(() =>
             service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9"));
@@ -152,7 +156,7 @@ public sealed class EpoSubmissionServiceTests
         var context = await SetupAsync();
         File.Delete(context.Submissions[0].FilePath);
         var client = new RecordingIsdsClient();
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         var report = await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
@@ -171,7 +175,7 @@ public sealed class EpoSubmissionServiceTests
         {
             FailFirstCreate = new IsdsException("Spojení s ISDS selhalo", inner: new HttpRequestException()) { IsOutcomeUnknown = true }
         };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         var report = await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
@@ -194,7 +198,7 @@ public sealed class EpoSubmissionServiceTests
         var context = await SetupAsync();
         // ISDS zprávu přijalo, ale odpověď se ztratila cestou zpět.
         var client = new LostResponseIsdsClient();
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         var stuck = (await context.Repository.LoadSubmissionsAsync(context.Period.Id)).Single(x => x.DocumentKind == "DPHDP");
@@ -225,7 +229,7 @@ public sealed class EpoSubmissionServiceTests
         {
             FailFirstCreate = new IsdsException("Spojení selhalo") { IsOutcomeUnknown = true }
         };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         // V ISDS žádná zpráva se značkou není → pokus podání nevytvořil, smí se poslat znovu.
@@ -246,7 +250,7 @@ public sealed class EpoSubmissionServiceTests
         {
             FailFirstCreate = new IsdsException("Spojení selhalo") { IsOutcomeUnknown = true }
         };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         // Síť je pořád rozbitá – ověřit to nejde, takže se radši neodesílá.
@@ -269,7 +273,7 @@ public sealed class EpoSubmissionServiceTests
         var context = await SetupAsync();
         // Stavový kód ISDS je jednoznačný – zpráva nevznikla, značka se musí zahodit.
         var client = new RecordingIsdsClient { FailFirstCreate = new IsdsException("Neplatné XML", "1214") };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         var rejected = (await context.Repository.LoadSubmissionsAsync(context.Period.Id)).Single(x => x.DocumentKind == "DPHDP");
@@ -285,7 +289,7 @@ public sealed class EpoSubmissionServiceTests
 
         // Starší pokus skončil nejistě…
         var client = new RecordingIsdsClient { FailFirstCreate = new IsdsException("Spojení selhalo") { IsOutcomeUnknown = true } };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, [vatReturn], "7nyn2d9");
 
         // …a mezitím vznikl novější export téhož souboru.
@@ -322,7 +326,7 @@ public sealed class EpoSubmissionServiceTests
         var context = await SetupAsync();
         var vatReturn = context.Submissions.Single(x => x.DocumentKind == "DPHDP");
         var client = new RecordingIsdsClient { FailFirstCreate = new IsdsException("Spojení selhalo") { IsOutcomeUnknown = true } };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, [vatReturn], "7nyn2d9");
 
         var reExported = new EpoSubmission
@@ -353,7 +357,7 @@ public sealed class EpoSubmissionServiceTests
         var context = await SetupAsync();
         var vatReturn = context.Submissions.Single(x => x.DocumentKind == "DPHDP");
         var client = new RecordingIsdsClient { FailFirstCreate = new IsdsException("Spojení selhalo") { IsOutcomeUnknown = true } };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, [vatReturn], "7nyn2d9");
 
         client.SentMessageListError = new IsdsException("Spojení selhalo") { IsOutcomeUnknown = true };
@@ -376,7 +380,7 @@ public sealed class EpoSubmissionServiceTests
 
         // Souběžný export řádek smaže dřív, než se stihne zapsat výsledek odeslání.
         var client = new VanishingRowIsdsClient(Path.Combine(context.Directory, "dph.sqlite"), vatReturn.Id);
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
 
         var report = await service.SendAsync(Credentials, context.Subject, context.Period, [vatReturn], "7nyn2d9");
 
@@ -398,7 +402,7 @@ public sealed class EpoSubmissionServiceTests
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient();
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
         var first = (await context.Repository.LoadSubmissionsAsync(context.Period.Id)).Single(x => x.DocumentKind == "DPHDP");
 
@@ -432,7 +436,7 @@ public sealed class EpoSubmissionServiceTests
     {
         var context = await SetupAsync();
         var client = new RecordingIsdsClient { SignedSentError = new IsdsException("zatím ne") };
-        var service = new EpoSubmissionService(client, context.Repository);
+        var service = CreateService(client, context.Repository);
         await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
 
         // Heslo se mezitím změnilo; při dotahování ZFO se to musí projevit, ne jen zapsat do hlášení.
@@ -543,6 +547,66 @@ public sealed class EpoSubmissionServiceTests
         }
     }
 
+    // ─── Doručenka hned po odeslání ještě není – dotáhne se opakovaným pokusem ───
+
+    [Fact]
+    public async Task Delivery_note_missing_right_after_send_is_retried_until_it_appears()
+    {
+        var context = await SetupAsync();
+        // Obě podání dostanou doručenku až napotřetí (2 podání × 2 kola bez doručenky).
+        var client = new RecordingIsdsClient { DeliveryUnavailableTimes = 4 };
+        // Prodlevy před 1., 2. a 3. pokusem; čtvrtá se nevyčerpá, protože doručenky už jsou.
+        var expectedWaits = new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6) };
+        var waits = new List<TimeSpan>();
+        var service = new EpoSubmissionService(client, context.Repository, (wait, _) =>
+        {
+            waits.Add(wait);
+            return Task.CompletedTask;
+        });
+        var progress = new List<string>();
+
+        var report = await service.SendAsync(
+            Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9",
+            progress: new Progress<string>(progress.Add));
+
+        Assert.Equal(2, report.Sent);
+        Assert.Equal(2, report.ArtifactsCompleted);
+        Assert.Equal(0, report.ArtifactsPending);
+        // I před prvním pokusem se čeká – hned po odeslání doručenka v ISDS ještě není.
+        Assert.Equal(expectedWaits, waits);
+        Assert.All(await context.Repository.LoadSubmissionsAsync(context.Period.Id), x =>
+        {
+            Assert.False(x.HasMissingArtifacts);
+            Assert.True(File.Exists(x.DeliveryZfoPath));
+        });
+        // Uživatel během čekání vidí, na co se čeká.
+        Assert.Contains(progress, x => x.Contains("doručenku"));
+    }
+
+    [Fact]
+    public async Task Delivery_note_that_never_arrives_is_reported_as_pending_not_as_a_failure()
+    {
+        var context = await SetupAsync();
+        var client = new RecordingIsdsClient { DeliveryUnavailableTimes = int.MaxValue };
+        var service = CreateService(client, context.Repository);
+
+        var report = await service.SendAsync(Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9");
+
+        Assert.Equal(2, report.Sent);
+        Assert.Equal(0, report.Failed);
+        Assert.Equal(2, report.ArtifactsPending);
+        // ZFO odeslané zprávy se stáhnout podařilo, takže podání jsou „rozpracovaná“, ne chybná.
+        Assert.Equal(2, report.ArtifactsCompleted);
+        // Hláška o nestažené doručence padne jen jednou za podání, ne z každého kola.
+        Assert.Equal(2, report.Messages.Count(x => x.Contains("doručenku se nepodařilo stáhnout")));
+        Assert.All(await context.Repository.LoadSubmissionsAsync(context.Period.Id), x =>
+        {
+            Assert.True(x.IsSent);
+            Assert.NotNull(x.MessageZfoPath);
+            Assert.Null(x.DeliveryZfoPath);
+        });
+    }
+
     private class RecordingIsdsClient : IIsdsClient
     {
         public List<(string Recipient, string Annotation, string Reference, IReadOnlyList<IsdsAttachment> Attachments)> Sent { get; } = [];
@@ -556,6 +620,9 @@ public sealed class EpoSubmissionServiceTests
 
         public Task<IsdsOwner> GetOwnerAsync(IsdsCredentials credentials, CancellationToken cancellationToken = default)
             => Task.FromResult(new IsdsOwner("abc1234", "Poplatník", "FO"));
+
+        public Task<IsdsDataBoxInfo?> FindDataBoxAsync(IsdsCredentials credentials, string dataBoxId, CancellationToken cancellationToken = default)
+            => Task.FromResult<IsdsDataBoxInfo?>(new IsdsDataBoxInfo(dataBoxId, "Finanční úřad", "", "OVM", true));
 
         public virtual Task<IsdsSentMessage> CreateMessageAsync(
             IsdsCredentials credentials,
@@ -595,9 +662,18 @@ public sealed class EpoSubmissionServiceTests
                 ? Task.FromResult<byte[]?>("ZFO"u8.ToArray())
                 : Task.FromException<byte[]?>(SignedSentError);
 
+        // Počet prvních pokusů, u kterých ISDS doručenku ještě nevydá (jako hned po odeslání).
+        public int DeliveryUnavailableTimes { get; set; }
+
         public Task<byte[]?> DownloadSignedDeliveryInfoAsync(IsdsCredentials credentials, string messageId, CancellationToken cancellationToken = default)
         {
             DeliveryDownloads.Add(messageId);
+            if (DeliveryUnavailableTimes > 0)
+            {
+                DeliveryUnavailableTimes--;
+                return Task.FromResult<byte[]?>(null);
+            }
+
             return Task.FromResult<byte[]?>("DOR"u8.ToArray());
         }
     }

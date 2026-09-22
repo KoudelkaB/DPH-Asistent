@@ -74,12 +74,12 @@
                 </Button>
                 <Button Grid.Column="4"
                         Command="{Binding SendToTaxOfficeCommand}"
-                        Content="Odeslat"
+                        Content="{Binding SendToTaxOfficeButtonText}"
                         Background="#2563EB"
                         Foreground="White"
                         BorderBrush="#1D4ED8"
                         Padding="14,6"
-                        ToolTip.Tip="Odešle exportovaná XML vybraného období datovou schránkou příslušnému finančnímu úřadu a stáhne ZFO zprávy a doručenku. Aktivní, dokud jsou v období neodeslaná XML nebo chybí doručenka.">
+                        ToolTip.Tip="{Binding SendToTaxOfficeButtonTip}">
                     <Button.Styles>
                         <Style Selector="Button:pointerover /template/ ContentPresenter">
                             <Setter Property="Background" Value="#1D4ED8"/>
@@ -123,7 +123,7 @@
 
                     <Grid Grid.Column="1" RowDefinitions="Auto,* ,Auto" RowSpacing="10">
                         <Border Background="White" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="4" Padding="10">
-                            <Grid ColumnDefinitions="110,120,90,120,90,120,100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                            <Grid ColumnDefinitions="110,120,90,120,90,120,100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                                 <TextBlock Text="DIČ" VerticalAlignment="Center"/>
                                 <TextBox Grid.Column="1" Text="{Binding TaxSubject.Dic}"/>
                                 <TextBlock Grid.Column="2" Text="Jméno" VerticalAlignment="Center"/>
@@ -178,7 +178,8 @@
                                         ToolTip.Tip="Podle IČO (nebo DIČ právnické osoby) doplní z ARES prázdné údaje poplatníka včetně cílového finančního úřadu (c_ufo)."/>
                                 <TextBlock Grid.Row="3" Grid.Column="4" Text="Telefon" VerticalAlignment="Center"/>
                                 <TextBox Grid.Row="3" Grid.Column="5" Text="{Binding TaxSubject.Phone}"/>
-                                <TextBlock Grid.Row="3" Grid.Column="6" Text="Datová schr." VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="3" Grid.Column="6" Text="Datová schr." VerticalAlignment="Center"
+                                           ToolTip.Tip="Datová schránka poplatníka (uvádí se v přiznání)."/>
                                 <TextBox Grid.Row="3" Grid.Column="7" Text="{Binding TaxSubject.DataBoxId}"/>
 
                                 <TextBlock Grid.Row="4" Text="Bankovní účet" VerticalAlignment="Center"
@@ -187,6 +188,23 @@
                                 <TextBlock Grid.Row="4" Grid.Column="4" Text="IBAN" VerticalAlignment="Center"
                                            ToolTip.Tip="Dopočítá se z bankovního účtu. Přepiš jen u zahraničního účtu."/>
                                 <TextBox Grid.Row="4" Grid.Column="5" Grid.ColumnSpan="3" Text="{Binding Iban}"/>
+
+                                <TextBlock Grid.Row="5" Text="Schránka úřadu" VerticalAlignment="Center"
+                                           ToolTip.Tip="ID datové schránky úřadu, kam se posílají podání. Prázdné = vybere se automaticky podle územního pracoviště, jinak podle finančního úřadu."/>
+                                <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding RecipientDataBoxId}"
+                                         PlaceholderText="automaticky"
+                                         ToolTip.Tip="Vyplň jen tehdy, když má podání jít do jiné schránky, než aplikace vybere sama. Adresáta si před odesláním ověříš v potvrzovacím dialogu."/>
+                                <Button Grid.Row="5" Grid.Column="2" Grid.ColumnSpan="2"
+                                        Command="{Binding UseAutomaticRecipientDataBoxCommand}"
+                                        Content="Automaticky"
+                                        HorizontalAlignment="Left"
+                                        IsEnabled="{Binding HasManualRecipientDataBox}"
+                                        ToolTip.Tip="Zahodí ruční ID a vrátí výběr schránky na automatiku podle finančního úřadu a územního pracoviště. Totéž udělá i vymazání pole."/>
+                                <TextBlock Grid.Row="5" Grid.Column="4" Grid.ColumnSpan="4"
+                                           Text="{Binding EffectiveRecipientText}"
+                                           Foreground="#4B5563" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip.Tip="{Binding EffectiveRecipientText}"/>
                             </Grid>
                         </Border>
 

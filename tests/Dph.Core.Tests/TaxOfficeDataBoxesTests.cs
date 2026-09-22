@@ -42,6 +42,67 @@ public sealed class TaxOfficeDataBoxesTests
     }
 
     [Theory]
+    [InlineData("2001", "2p2n5ad")] // ÚzP pro Prahu 1
+    [InlineData("2110", "w56n5ku")] // ÚzP v Kladně
+    [InlineData("3312", "4jhn65c")] // ÚzP ve Vsetíně
+    public void Maps_workplaces_from_the_official_list(string workplaceCode, string expected)
+        => Assert.Equal(expected, TaxOfficeDataBoxes.ForWorkplace(workplaceCode));
+
+    [Fact]
+    public void Workplace_takes_precedence_over_its_office()
+    {
+        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.For("451", "2001"));
+        // Pracoviště bez vlastní schránky (optimalizované) i prázdná volba spadnou na finanční úřad.
+        Assert.Equal("7nyn2d9", TaxOfficeDataBoxes.For("451", ""));
+        Assert.Equal("6sxny3p", TaxOfficeDataBoxes.For("452", "2108")); // ÚzP v Dobříši
+        Assert.Null(TaxOfficeDataBoxes.For("", "9999"));
+    }
+
+    [Fact]
+    public void Workplace_of_another_office_never_routes_the_filing_there()
+    {
+        // Uložený kód pracoviště přežije změnu úřadu (ARES úřad přepíše, pracoviště nechá být).
+        // ÚzP pro Prahu 1 patří pod 451; se Středočeským krajem (452) se nesmí použít.
+        Assert.Null(TaxOfficeDataBoxes.ForWorkplace("2001", "452"));
+        Assert.Equal("6sxny3p", TaxOfficeDataBoxes.For("452", "2001"));
+        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.For("451", "2001"));
+
+        Assert.False(TaxOfficeDataBoxes.BelongsToOffice("2001", "452"));
+        Assert.True(TaxOfficeDataBoxes.BelongsToOffice("2001", "451"));
+        Assert.False(TaxOfficeDataBoxes.BelongsToOffice("9999", "451"));
+        Assert.False(TaxOfficeDataBoxes.BelongsToOffice("2001", ""));
+
+        // Bez kódu úřadu zůstává dohledání podle pracoviště nezměněné.
+        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.ForWorkplace("2001"));
+    }
+
+    [Fact]
+    public void Every_workplace_with_a_data_box_belongs_to_its_office_in_the_directory()
+    {
+        // Tabulka schránek a číselník musí sedět, jinak by kontrola příslušnosti tiše vyřadila
+        // pracoviště, která vlastní schránku mají.
+        foreach (var (code, _) in TaxOfficeDataBoxes.AllWorkplaces)
+        {
+            var workplace = TaxOfficeDirectory.Workplaces.Single(x => x.Code == code);
+            Assert.True(
+                TaxOfficeDataBoxes.BelongsToOffice(code, workplace.OfficeCode),
+                $"Pracoviště {code} není v číselníku vedené pod úřadem {workplace.OfficeCode}.");
+        }
+    }
+
+    [Fact]
+    public void Workplace_ids_have_the_isds_shape_and_belong_to_known_workplaces()
+    {
+        Assert.All(TaxOfficeDataBoxes.AllWorkplaces.Values, id => Assert.True(TaxOfficeDataBoxes.IsValidId(id), id));
+
+        var known = TaxOfficeDirectory.Workplaces.Select(x => x.Code).ToHashSet();
+        Assert.All(TaxOfficeDataBoxes.AllWorkplaces.Keys, code => Assert.Contains(code, known));
+
+        // Schránka územního pracoviště nesmí kolidovat se schránkou finančního úřadu.
+        Assert.Empty(TaxOfficeDataBoxes.AllWorkplaces.Values.Intersect(TaxOfficeDataBoxes.All.Values));
+    }
+
+    [Theory]
     [InlineData("7nyn2d9", true)]
     [InlineData("7nyn2d", false)]
     [InlineData("7nyn2d99", false)]

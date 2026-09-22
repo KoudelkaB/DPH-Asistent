@@ -19,6 +19,10 @@ public sealed class TaxSubject
     public string TaxOfficeCode { get; set; } = "";
     public string WorkplaceCode { get; set; } = "";
     public string? DataBoxId { get; set; }
+
+    // Ruční ID datové schránky úřadu, kam se posílají podání. Prázdné = adresát se určí
+    // automaticky podle územního pracoviště, resp. finančního úřadu.
+    public string? RecipientDataBoxId { get; set; }
     public string ActivityCode { get; set; } = "620000";
 
     // Platební údaje dodavatele pro vydané faktury. BankAccount ve tvaru "[předčíslí-]číslo/kódbanky";

@@ -24,7 +24,7 @@ Sestavení balíčků a publikace na Flathub/Winget jsou popsané v [PUBLISHING.
 - Podpora cizí měny a dopočtu základu v CZK kurzem ČNB podle DUZP.
 - Adresář odběratelů a dodavatelů s vazbou na doklady.
 - Automatické ukládání řádků dokladů během práce.
-- Odeslání exportovaných XML příslušnému finančnímu úřadu datovou schránkou včetně stažení ZFO odeslané zprávy a doručenky.
+- Odeslání exportovaných XML datovou schránkou příslušnému územnímu pracovišti finančního úřadu včetně stažení ZFO odeslané zprávy a doručenky.
 - Uzamčení již podaného (importovaného/exportovaného) období s potvrzením před další úpravou.
 - Rozlišení řádného, opravného a – po lhůtě – dodatečného přiznání a následného kontrolního hlášení.
 - Záloha a obnova lokální databáze.
@@ -59,12 +59,16 @@ Opravné, dodatečné i následné exporty dostávají samostatný název soubor
 
 ## Odeslání datovou schránkou
 
-Tlačítko **Odeslat** v horní liště pošle exportovaná XML vybraného období příslušnému finančnímu úřadu datovou schránkou (webové služby ISDS) a hned k nim stáhne ZFO odeslané zprávy a doručenku.
+Tlačítko **Odeslat** v horní liště pošle exportovaná XML vybraného období datovou schránkou (webové služby ISDS) příslušnému územnímu pracovišti finančního úřadu a hned k nim stáhne ZFO odeslané zprávy a doručenku.
 
 - Aplikace eviduje každé vyexportované XML jako podání čekající na odeslání. Tlačítko je aktivní u každého období, které má neodeslaná XML – nebo u kterého ještě chybí stažené ZFO či doručenka. V seznamu období je stav vidět jako příznak `k odeslání`, `chybí doručenka`, nebo `odesláno`.
 - Přiznání a kontrolní hlášení jsou dvě samostatná podání, proto jdou jako **dvě samostatné datové zprávy**, každá s jedním XML v příloze a s věcí, ze které je podání poznat (např. „Řádné přiznání k DPH za 06/2026, DIČ CZ…“).
-- Příjemce se určuje podle finančního úřadu poplatníka podle [seznamu ID kódů orgánů finanční správy ČR](https://financnisprava.gov.cz/cs/dane/dane-elektronicky/datove-schranky/seznam-id-kodu-organu-financni-spravy-cr). Adresátem je vždy datová schránka finančního úřadu (kraje), ne územního pracoviště; územní pracoviště se uvádí jen v XML.
-- ZFO se ukládají vedle odeslaného XML jako `<název>_<ID zprávy>_zprava.zfo` (odeslaná zpráva) a `<název>_<ID zprávy>_dorucenka.zfo` (doručenka). ID zprávy v názvu zajistí, že opakovaný export a odeslání téhož souboru nepřepíše důkaz o dřívějším podání. Pokud ISDS doručenku hned nevydá, podání zůstane označené jako nedokončené a dalším stiskem tlačítka **Odeslat** se jen dotáhne – znovu se neodesílá.
+- Příjemce se určuje podle [seznamu ID kódů orgánů finanční správy ČR](https://financnisprava.gov.cz/cs/dane/dane-elektronicky/datove-schranky/seznam-id-kodu-organu-financni-spravy-cr). Adresátem je datová schránka **územního pracoviště** vybraného u poplatníka, protože podání spravuje ono. Pracoviště bez vlastní datové schránky (optimalizovaná, s omezenými úředními dny) a nevyplněná volba pracoviště směrují podání do schránky finančního úřadu (kraje). Bez vybraného finančního úřadu se neodesílá nic.
+- Automatickou volbu lze přebít: pole **Schránka úřadu** v údajích poplatníka přijme ID datové schránky, které se pak použije vždy. Neplatné ID (jiné než 7 znaků) odeslání zastaví. Vedle pole je vidět, kam podání skutečně půjde.
+- Zpátky k automatice se dá kdykoli: vymazáním pole, nebo tlačítkem **Automaticky**. Ruční volba se navíc sama zruší při změně finančního úřadu nebo územního pracoviště – patřila k původnímu výběru a jinak by podání tiše mířilo na starou adresu. Načtení poplatníka ani doplnění z ARES ruční volbu nemaže.
+- Před potvrzením aplikace **dotáhne z datové schránky název a adresu majitele** cílové schránky, takže adresáta zkontrolujete přímo v dialogu a nemusíte ho dohledávat v portálu. Dialog také říká, jestli ID vybrala aplikace, nebo je zadané ručně, a upozorní, když ISDS schránku nezná nebo není zpřístupněná. Když se ověření nepodaří (výpadek spojení), odeslání to nezastaví – jen se to v dialogu přizná.
+- ZFO se ukládají vedle odeslaného XML jako `<název>_<ID zprávy>_zprava.zfo` (odeslaná zpráva) a `<název>_<ID zprávy>_dorucenka.zfo` (doručenka). ID zprávy v názvu zajistí, že opakovaný export a odeslání téhož souboru nepřepíše důkaz o dřívějším podání.
+- Doručenka hned po odeslání v ISDS ještě neexistuje. Aplikace proto čeká už před prvním pokusem o stažení a pak to zkouší znovu s rostoucí prodlevou (1, 3, 6 a 10 sekund, dohromady nejvýš 20 sekund); průběh hlásí ve stavovém řádku a po dobu čekání ukazuje kurzor „čekej“. Když doručenka nepřijde ani pak, výsledek to výslovně říká – **není to chyba**, podání u úřadu je. Období zůstane s příznakem `chybí doručenka` a popisek tlačítka se změní na **Stáhnout doručenku**: po chvíli ho stačí stisknout znovu, chybějící ZFO a doručenka se jen dotáhnou a nic se neodešle podruhé.
 - Odeslání se do evidence zapíše dřív, než se stahují ZFO. Ani při výpadku sítě nebo pádu aplikace se tedy podání neodešle podruhé.
 
 ### Nejisté odeslání

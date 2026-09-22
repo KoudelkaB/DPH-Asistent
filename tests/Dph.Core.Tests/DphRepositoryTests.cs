@@ -7,6 +7,22 @@ namespace Dph.Core.Tests;
 
 public sealed class DphRepositoryTests
 {
+    [Fact]
+    public async Task Manual_recipient_data_box_survives_a_round_trip_and_defaults_to_empty()
+    {
+        var repository = new DphRepository(Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite"));
+        await repository.InitializeAsync();
+        var subject = new TaxSubject { DisplayName = "Poplatník", TaxOfficeCode = "451", WorkplaceCode = "2001" };
+
+        await repository.SaveTaxSubjectAsync(subject);
+        // Bez ruční volby zůstává sloupec prázdný – adresát se určuje automaticky.
+        Assert.Null((await repository.LoadTaxSubjectAsync())!.RecipientDataBoxId);
+
+        subject.RecipientDataBoxId = "7nyn2d9";
+        await repository.SaveTaxSubjectAsync(subject);
+        Assert.Equal("7nyn2d9", (await repository.LoadTaxSubjectAsync())!.RecipientDataBoxId);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -41,7 +57,7 @@ public sealed class DphRepositoryTests
         Assert.Null(row.IssuedInvoiceId);
         Assert.Null((await repository.LoadIssuedInvoiceAsync(invoice.Id))!.VatInsertedAt);
         command.CommandText = "pragma user_version";
-        Assert.Equal(4L, await command.ExecuteScalarAsync());
+        Assert.Equal(5L, await command.ExecuteScalarAsync());
     }
 
     [Fact]

@@ -10,6 +10,11 @@ public sealed class FakeIsdsClient : IIsdsClient
     public List<string> DeliveryDownloads { get; } = [];
 
     public IsdsOwner Owner { get; set; } = new("abc1234", "Testovací poplatník", "FO");
+    // Co ISDS odpoví na dotaz po cizí schránce; null = schránku nezná.
+    public Func<string, IsdsDataBoxInfo?> DataBoxLookup { get; set; } =
+        id => new IsdsDataBoxInfo(id, "Finanční úřad (test)", "Testovací 1, 11000 Praha", "OVM", true);
+    public Exception? DataBoxLookupError { get; set; }
+    public List<string> DataBoxLookups { get; } = [];
     public Func<int, string> MessageIdFactory { get; set; } = index => $"10000{index}";
     public Exception? CreateMessageError { get; set; }
     public Exception? OwnerError { get; set; }
@@ -19,6 +24,14 @@ public sealed class FakeIsdsClient : IIsdsClient
     // Umožní testu pozdržet odesílání a sáhnout aplikaci pod ruku.
     public Func<Task>? BeforeCreateMessage { get; set; }
     public Func<Task>? BeforeGetOwner { get; set; }
+
+    public Task<IsdsDataBoxInfo?> FindDataBoxAsync(IsdsCredentials credentials, string dataBoxId, CancellationToken cancellationToken = default)
+    {
+        DataBoxLookups.Add(dataBoxId);
+        return DataBoxLookupError is null
+            ? Task.FromResult(DataBoxLookup(dataBoxId))
+            : Task.FromException<IsdsDataBoxInfo?>(DataBoxLookupError);
+    }
 
     public async Task<IsdsOwner> GetOwnerAsync(IsdsCredentials credentials, CancellationToken cancellationToken = default)
     {

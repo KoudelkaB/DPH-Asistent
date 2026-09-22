@@ -31,6 +31,7 @@ public sealed class DphRepository(string databasePath)
                 tax_office_code text not null,
                 workplace_code text not null,
                 data_box_id text null,
+                recipient_data_box_id text null,
                 activity_code text not null,
                 bank_account text null,
                 iban text null
@@ -160,7 +161,7 @@ public sealed class DphRepository(string databasePath)
     // Verze schématu se zvyšuje při každé změně struktury, i mezi vydáními.
     // 0 = původní DB, 1 = vazby a historie faktur, 2 = původní doklad nad limitem KH,
     // 3 = evidence odeslání XML datovou schránkou, 4 = značka a čas pokusu o odeslání.
-    private const long CurrentSchemaVersion = 4;
+    private const long CurrentSchemaVersion = 5;
 
     private static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -236,6 +237,13 @@ public sealed class DphRepository(string databasePath)
             await EnsureColumnAsync(connection, "epo_submissions", "send_attempted_at", "text null", cancellationToken);
         }
 
+        if (version < 5)
+        {
+            // Ruční volba datové schránky úřadu. Prázdný sloupec znamená automatickou volbu,
+            // takže stávající databáze nic měnit nepotřebují.
+            await EnsureColumnAsync(connection, "tax_subjects", "recipient_data_box_id", "text null", cancellationToken);
+        }
+
         await ExecuteAsync(connection, $"pragma user_version = {CurrentSchemaVersion}", cancellationToken);
     }
 
@@ -265,6 +273,7 @@ public sealed class DphRepository(string databasePath)
                 TaxOfficeCode = Text(reader, "tax_office_code"),
                 WorkplaceCode = Text(reader, "workplace_code"),
                 DataBoxId = NullableText(reader, "data_box_id"),
+                RecipientDataBoxId = NullableText(reader, "recipient_data_box_id"),
                 ActivityCode = Text(reader, "activity_code"),
                 BankAccount = NullableText(reader, "bank_account"),
                 Iban = NullableText(reader, "iban")
@@ -277,13 +286,14 @@ public sealed class DphRepository(string databasePath)
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            insert into tax_subjects (id, display_name, dic, ico, first_name, last_name, title, street, house_number, city, postal_code, country, email, phone, tax_office_code, workplace_code, data_box_id, activity_code, bank_account, iban)
-            values (1, $display_name, $dic, $ico, $first_name, $last_name, $title, $street, $house_number, $city, $postal_code, $country, $email, $phone, $tax_office_code, $workplace_code, $data_box_id, $activity_code, $bank_account, $iban)
+            insert into tax_subjects (id, display_name, dic, ico, first_name, last_name, title, street, house_number, city, postal_code, country, email, phone, tax_office_code, workplace_code, data_box_id, recipient_data_box_id, activity_code, bank_account, iban)
+            values (1, $display_name, $dic, $ico, $first_name, $last_name, $title, $street, $house_number, $city, $postal_code, $country, $email, $phone, $tax_office_code, $workplace_code, $data_box_id, $recipient_data_box_id, $activity_code, $bank_account, $iban)
             on conflict(id) do update set
                 display_name=excluded.display_name, dic=excluded.dic, ico=excluded.ico, first_name=excluded.first_name, last_name=excluded.last_name,
                 title=excluded.title, street=excluded.street, house_number=excluded.house_number, city=excluded.city, postal_code=excluded.postal_code,
                 country=excluded.country, email=excluded.email, phone=excluded.phone, tax_office_code=excluded.tax_office_code,
-                workplace_code=excluded.workplace_code, data_box_id=excluded.data_box_id, activity_code=excluded.activity_code,
+                workplace_code=excluded.workplace_code, data_box_id=excluded.data_box_id,
+                recipient_data_box_id=excluded.recipient_data_box_id, activity_code=excluded.activity_code,
                 bank_account=excluded.bank_account, iban=excluded.iban
             """;
         Add(command, "$display_name", subject.DisplayName);
@@ -302,6 +312,7 @@ public sealed class DphRepository(string databasePath)
         Add(command, "$tax_office_code", subject.TaxOfficeCode);
         Add(command, "$workplace_code", subject.WorkplaceCode);
         Add(command, "$data_box_id", subject.DataBoxId);
+        Add(command, "$recipient_data_box_id", subject.RecipientDataBoxId);
         Add(command, "$activity_code", subject.ActivityCode);
         Add(command, "$bank_account", subject.BankAccount);
         Add(command, "$iban", subject.Iban);

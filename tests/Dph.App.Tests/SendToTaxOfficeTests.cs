@@ -26,9 +26,10 @@ public sealed class SendToTaxOfficeTests
 
         await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
 
-        // Přiznání i kontrolní hlášení jdou jako samostatná podání příslušnému finančnímu úřadu.
+        // Přiznání i kontrolní hlášení jdou jako samostatná podání územnímu pracovišti, které je
+        // spravuje (ÚzP pro Prahu 1), ne do schránky kraje.
         Assert.Equal(2, context.Isds.SentMessages.Count);
-        Assert.All(context.Isds.SentMessages, x => Assert.Equal("7nyn2d9", x.Recipient));
+        Assert.All(context.Isds.SentMessages, x => Assert.Equal("2p2n5ad", x.Recipient));
         Assert.Equal(
             ["2026-05_DPHDP_podani.xml", "2026-05_DPHKH_podani.xml"],
             context.Isds.SentMessages.Select(x => x.Attachments.Single().FileName));
@@ -114,6 +115,178 @@ public sealed class SendToTaxOfficeTests
     }
 
     [Fact]
+    public async Task Recipient_Is_Verified_Against_Isds_Before_The_Confirmation()
+    {
+        var context = await ExportAsync();
+        context.Isds.DataBoxLookup = id => new IsdsDataBoxInfo(
+            id, "Finanční úřad pro hlavní město Prahu", "Štěpánská 619/28, 11233 Praha 1", "OVM", true);
+        var confirmations = new List<string>();
+        context.ViewModel.ConfirmAsync = (_, text) => { confirmations.Add(text); return Task.FromResult(true); };
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        // Adresát se dotáhl živě z ISDS, uživatel ho nemusí hledat v portálu.
+        Assert.Equal(["2p2n5ad"], context.Isds.DataBoxLookups);
+        var confirmation = Assert.Single(confirmations);
+        Assert.Contains("Finanční úřad pro hlavní město Prahu", confirmation);
+        Assert.Contains("Štěpánská 619/28, 11233 Praha 1", confirmation);
+        Assert.Contains("vybrala aplikace", confirmation);
+    }
+
+    [Fact]
+    public async Task Unverifiable_Or_Unknown_Recipient_Is_Flagged_But_Does_Not_Block_The_Send()
+    {
+        var context = await ExportAsync();
+        context.Isds.DataBoxLookup = _ => null; // ISDS schránku s tímto ID nezná
+        var confirmations = new List<string>();
+        context.ViewModel.ConfirmAsync = (_, text) => { confirmations.Add(text); return Task.FromResult(false); };
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        Assert.Contains("ISDS nezná", Assert.Single(confirmations));
+        Assert.Empty(context.Isds.SentMessages);
+        Assert.Equal("Odeslání zrušeno.", context.ViewModel.StatusMessage);
+
+        // Ani výpadek ověření odeslání nezastaví – jen se v potvrzení přizná.
+        confirmations.Clear();
+        context.Isds.DataBoxLookupError = new IsdsException("Spojení selhalo");
+        context.ViewModel.ConfirmAsync = (_, text) => { confirmations.Add(text); return Task.FromResult(true); };
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        Assert.Contains("nepodařilo ověřit", Assert.Single(confirmations));
+        Assert.Equal(2, context.Isds.SentMessages.Count);
+    }
+
+    [Fact]
+    public async Task Waiting_For_Isds_Is_Signalled_And_Ends_With_The_Send()
+    {
+        var context = await ExportAsync();
+        var busyDuringSend = false;
+        context.Isds.BeforeCreateMessage = () =>
+        {
+            busyDuringSend = context.ViewModel.IsBusy;
+            return Task.CompletedTask;
+        };
+        // Při čtení dialogu kurzor „čekej“ být nemá – tam se na nic nečeká.
+        var busyInDialog = true;
+        context.ViewModel.ConfirmAsync = (_, _) =>
+        {
+            busyInDialog = context.ViewModel.IsBusy;
+            return Task.FromResult(true);
+        };
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        Assert.True(busyDuringSend);
+        Assert.False(busyInDialog);
+        Assert.False(context.ViewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task Manually_Entered_Data_Box_Wins_Over_The_Automatic_Choice()
+    {
+        var context = await ExportAsync();
+        context.ViewModel.TaxSubject.RecipientDataBoxId = " 7nyn2d9 ";
+        var confirmations = new List<string>();
+        context.ViewModel.ConfirmAsync = (_, text) => { confirmations.Add(text); return Task.FromResult(true); };
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        Assert.All(context.Isds.SentMessages, x => Assert.Equal("7nyn2d9", x.Recipient));
+        Assert.Equal(["7nyn2d9"], context.Isds.DataBoxLookups);
+        Assert.Contains("zadané ručně", Assert.Single(confirmations));
+    }
+
+    [Fact]
+    public async Task Changing_The_Workplace_Drops_The_Manual_Data_Box()
+    {
+        var context = await ExportAsync();
+        context.ViewModel.RecipientDataBoxId = "7nyn2d9";
+        Assert.True(context.ViewModel.HasManualRecipientDataBox);
+
+        // Ruční schránka patřila k původnímu pracovišti – po přepnutí by mířila jinam.
+        context.ViewModel.SelectedWorkplace = context.ViewModel.AvailableWorkplaces.Single(x => x.Code == "2002");
+
+        Assert.Equal("", context.ViewModel.RecipientDataBoxId);
+        Assert.False(context.ViewModel.HasManualRecipientDataBox);
+        Assert.Contains("vybere automaticky", context.ViewModel.StatusMessage);
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+        // ÚzP pro Prahu 2, tedy automatická volba podle nového pracoviště.
+        Assert.All(context.Isds.SentMessages, x => Assert.Equal("qijn44u", x.Recipient));
+    }
+
+    [Fact]
+    public async Task Automatic_Recipient_Can_Be_Restored_By_Button_Or_By_Clearing_The_Field()
+    {
+        var context = await ExportAsync();
+
+        context.ViewModel.RecipientDataBoxId = "7nyn2d9";
+        Assert.Contains("(ručně)", context.ViewModel.EffectiveRecipientText);
+
+        context.ViewModel.UseAutomaticRecipientDataBoxCommand.Execute(null);
+        Assert.Equal("", context.ViewModel.RecipientDataBoxId);
+        Assert.Contains("2p2n5ad", context.ViewModel.EffectiveRecipientText);
+        Assert.Contains("Územní pracoviště pro Prahu 1", context.ViewModel.EffectiveRecipientText);
+
+        // Vymazání pole ve formuláři dělá totéž co tlačítko.
+        context.ViewModel.RecipientDataBoxId = "7nyn2d9";
+        context.ViewModel.RecipientDataBoxId = "   ";
+        Assert.False(context.ViewModel.HasManualRecipientDataBox);
+        Assert.Null(context.ViewModel.TaxSubject.RecipientDataBoxId);
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+        Assert.All(context.Isds.SentMessages, x => Assert.Equal("2p2n5ad", x.Recipient));
+    }
+
+    [Fact]
+    public async Task Workplace_Left_Over_From_Another_Office_Does_Not_Route_The_Filing_There()
+    {
+        var context = await ExportAsync();
+        // Doplnění z ARES přepíše finanční úřad, ale kód pracoviště nechá být – takhle vznikne
+        // dvojice, která spolu nesouvisí (ÚzP pro Prahu 1 pod Středočeským krajem).
+        context.ViewModel.TaxSubject.TaxOfficeCode = "452";
+        var confirmations = new List<string>();
+        context.ViewModel.ConfirmAsync = (_, text) => { confirmations.Add(text); return Task.FromResult(true); };
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        // Podání jde do schránky finančního úřadu, ne do Prahy 1 (2p2n5ad).
+        Assert.All(context.Isds.SentMessages, x => Assert.Equal("6sxny3p", x.Recipient));
+        Assert.Contains("nepatří k úřadu", Assert.Single(confirmations));
+    }
+
+    [Fact]
+    public async Task Expired_Stored_Password_Is_Forgotten_When_Verifying_The_Recipient()
+    {
+        var context = await ExportAsync(new InMemoryCredentialStore(new IsdsCredentials("uzivatel", "stare-heslo")));
+        context.Isds.DataBoxLookupError =
+            new IsdsException("Chybné heslo", "401") { IsAuthenticationFailure = true };
+
+        // Nesmí to propadnout jako neošetřená výjimka z příkazu – uživatel by nevěděl, co se stalo,
+        // a příští pokus by narazil na totéž uložené heslo.
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        Assert.Empty(context.Isds.SentMessages);
+        Assert.Null(context.CredentialStore.Stored);
+        Assert.Equal(1, context.CredentialStore.ClearCount);
+        Assert.Contains("Chybné heslo", context.ViewModel.StatusMessage);
+        Assert.False(context.ViewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task Malformed_Manual_Data_Box_Stops_The_Send()
+    {
+        var context = await ExportAsync();
+        context.ViewModel.TaxSubject.RecipientDataBoxId = "7nyn2d";
+
+        await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
+
+        Assert.Empty(context.Isds.SentMessages);
+        Assert.Contains("nemá tvar 7 znaků", context.ViewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Unknown_Tax_Office_Blocks_The_Send()
     {
         var context = await ExportAsync();
@@ -130,13 +303,19 @@ public sealed class SendToTaxOfficeTests
     {
         var context = await ExportAsync();
         context.Isds.SignedDeliveryInfo = null; // ISDS ji hned po odeslání ještě nevydá
+        var reports = new List<string>();
+        context.ViewModel.ShowReportAsync = (_, text) => { reports.Add(text); return Task.CompletedTask; };
 
+        Assert.Equal("Odeslat", context.ViewModel.SendToTaxOfficeButtonText);
         await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
 
         Assert.Equal(2, context.Isds.SentMessages.Count);
         Assert.Contains("chybí doručenka", context.Period.Label);
         // Tlačítko zůstává aktivní, protože je co dotáhnout.
         Assert.True(context.ViewModel.CanSendToTaxOffice);
+        // Chybějící doručenka nesmí vypadat jako chyba – výsledek to vysvětlí a tlačítko změní popisek.
+        Assert.Contains("Stáhnout doručenku", context.ViewModel.SendToTaxOfficeButtonText);
+        Assert.Contains(reports, x => x.Contains("Není to chyba") && x.Contains("Stáhnout doručenku"));
 
         context.Isds.SignedDeliveryInfo = [9, 9, 9];
         await context.ViewModel.SendToTaxOfficeCommand.ExecuteAsync(null);
@@ -145,6 +324,7 @@ public sealed class SendToTaxOfficeTests
         Assert.True(File.Exists(Path.Combine(context.Directory, "2026-05_DPHDP_podani_100001_dorucenka.zfo")));
         Assert.False(context.ViewModel.CanSendToTaxOffice);
         Assert.Contains("odesláno", context.Period.Label);
+        Assert.Equal("Odeslat", context.ViewModel.SendToTaxOfficeButtonText);
     }
 
     [Fact]
@@ -492,7 +672,9 @@ public sealed class SendToTaxOfficeTests
     private static MainWindowViewModel CreateViewModel(DphRepository repository, FakeIsdsClient isds, InMemoryCredentialStore store)
     {
         var viewModel = new MainWindowViewModel(
-            repository, new NoAresClient(), new NoExchangeRateProvider(), new NoTaxOfficeCatalog(), isds, store);
+            repository, new NoAresClient(), new NoExchangeRateProvider(), new NoTaxOfficeCatalog(), isds, store,
+            // Opakované pokusy o doručenku se v testech nemají skutečně čekat.
+            (_, _) => Task.CompletedTask);
         return viewModel;
     }
 

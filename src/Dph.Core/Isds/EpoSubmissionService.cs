@@ -12,27 +12,49 @@ public sealed record EpoSendReport(
     int Unresolved,
     /// <summary>Podání odložená proto, že starší pokus s týmž souborem zůstal neověřený.</summary>
     int Blocked,
-    IReadOnlyList<string> Messages);
+    IReadOnlyList<string> Messages,
+    /// <summary>
+    /// Odeslaná podání, u kterých ISDS ani po opakovaných pokusech nevydal ZFO nebo doručenku.
+    /// Není to chyba – doručenka vzniká s odstupem a dotáhne se dalším stiskem tlačítka.
+    /// </summary>
+    int ArtifactsPending = 0);
 
 /// <summary>
 /// Odešle vyexportovaná XML příslušnému finančnímu úřadu datovou schránkou a stáhne k nim ZFO
 /// odeslané zprávy a doručenku. Každé podání (přiznání, kontrolní hlášení) jde jako samostatná
 /// datová zpráva – tak je EPO/ADIS zpracovává a každé má vlastní doručenku.
 /// </summary>
-public sealed class EpoSubmissionService(IIsdsClient client, DphRepository repository)
+public sealed class EpoSubmissionService(
+    IIsdsClient client,
+    DphRepository repository,
+    Func<TimeSpan, CancellationToken, Task>? delay = null)
 {
+    // Hned po odeslání doručenka v ISDS ještě není – vzniká, až se zpráva doručí. Proto se čeká
+    // i před prvním pokusem o stažení a pak se to zkouší znovu s rostoucí prodlevou; dohromady
+    // se čeká nejvýš 20 sekund, což často stačí a uživatel nemusí mačkat tlačítko znovu.
+    private static readonly TimeSpan[] ArtifactFetchDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(6),
+        TimeSpan.FromSeconds(10),
+    ];
+
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay = delay ?? Task.Delay;
+
     public async Task<EpoSendReport> SendAsync(
         IsdsCredentials credentials,
         TaxSubject subject,
         VatPeriod period,
         IReadOnlyList<EpoSubmission> submissions,
         string recipientDataBoxId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null)
     {
         var messages = new List<string>();
         var sent = 0;
         var failed = 0;
-        var completed = 0;
+        var completedIds = new HashSet<long>();
         var unresolved = 0;
         var blocked = 0;
 
@@ -156,13 +178,63 @@ public sealed class EpoSubmissionService(IIsdsClient client, DphRepository repos
                 }
             }
 
-            if (await TryCompleteArtifactsAsync(credentials, submission, messages, cancellationToken))
-            {
-                completed++;
-            }
         }
 
-        return new EpoSendReport(sent, failed, completed, unresolved, blocked, messages);
+        // ZFO a doručenky se dotahují až po odeslání všech zpráv – hned po odeslání stejně
+        // v ISDS nejsou a čekání se tak nesčítá za každé podání zvlášť.
+        var stillMissingArtifacts = await FetchMissingArtifactsAsync(
+            credentials,
+            submissions,
+            completedIds,
+            messages,
+            progress,
+            cancellationToken);
+
+        return new EpoSendReport(sent, failed, completedIds.Count, unresolved, blocked, messages, stillMissingArtifacts);
+    }
+
+    /// <summary>
+    /// Stáhne chybějící ZFO a doručenky u odeslaných podání; každému pokusu předchází prodleva,
+    /// protože ISDS je hned po odeslání ještě nevydá. Hlášky o neúspěchu se zapíšou až
+    /// z posledního pokusu, aby se stejná věta neopakovala u každého kola.
+    /// </summary>
+    private async Task<int> FetchMissingArtifactsAsync(
+        IsdsCredentials credentials,
+        IReadOnlyList<EpoSubmission> submissions,
+        HashSet<long> completedIds,
+        List<string> messages,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var outstanding = submissions.Where(x => x.IsSent && x.HasMissingArtifacts).ToList();
+        for (var attempt = 0; outstanding.Count > 0 && attempt < ArtifactFetchDelays.Length; attempt++)
+        {
+            var wait = ArtifactFetchDelays[attempt];
+            progress?.Report(attempt == 0
+                ? $"Čekám {wait.TotalSeconds:0} s na doručenku z datové schránky…"
+                : $"Doručenka zatím není k dispozici – zkouším to znovu za {wait.TotalSeconds:0} s "
+                  + $"(pokus {attempt + 1} z {ArtifactFetchDelays.Length})…");
+            await _delay(wait, cancellationToken);
+
+            var isLastAttempt = attempt == ArtifactFetchDelays.Length - 1;
+            var stillMissing = new List<EpoSubmission>();
+            foreach (var submission in outstanding)
+            {
+                if (await TryCompleteArtifactsAsync(credentials, submission, isLastAttempt ? messages : null, cancellationToken))
+                {
+                    completedIds.Add(submission.Id);
+                }
+
+                if (submission.HasMissingArtifacts)
+                {
+                    stillMissing.Add(submission);
+                }
+            }
+
+            outstanding = stillMissing;
+        }
+
+        return outstanding.Count;
     }
 
     /// <summary>
@@ -260,7 +332,7 @@ public sealed class EpoSubmissionService(IIsdsClient client, DphRepository repos
     private async Task<bool> TryCompleteArtifactsAsync(
         IsdsCredentials credentials,
         EpoSubmission submission,
-        List<string> messages,
+        List<string>? messages,
         CancellationToken cancellationToken)
     {
         if (submission.MessageId is not { Length: > 0 } messageId || !submission.HasMissingArtifacts)
@@ -325,7 +397,7 @@ public sealed class EpoSubmissionService(IIsdsClient client, DphRepository repos
         Func<Task<byte[]?>> download,
         string targetPath,
         string failureMessage,
-        List<string> messages,
+        List<string>? messages,
         CancellationToken cancellationToken)
     {
         try
@@ -333,7 +405,7 @@ public sealed class EpoSubmissionService(IIsdsClient client, DphRepository repos
             var content = await download();
             if (content is null)
             {
-                messages.Add($"{failureMessage} (ISDS ji zatím nevrací).");
+                messages?.Add($"{failureMessage} (ISDS ji zatím nevrací).");
                 return null;
             }
 
@@ -348,7 +420,7 @@ public sealed class EpoSubmissionService(IIsdsClient client, DphRepository repos
         }
         catch (Exception exception) when (exception is IsdsException or IOException or UnauthorizedAccessException)
         {
-            messages.Add($"{failureMessage}: {exception.Message}");
+            messages?.Add($"{failureMessage}: {exception.Message}");
             return null;
         }
     }

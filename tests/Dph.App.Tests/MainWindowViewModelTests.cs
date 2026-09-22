@@ -406,6 +406,31 @@ public sealed class MainWindowViewModelTests
             => Task.FromResult<ExchangeRate?>(new(date, currencyCode, 1, 25m));
     }
 
+    [Fact]
+    public async Task New_Period_Keeps_The_Day_Of_The_Copied_Taxable_Supply_Date()
+    {
+        var repository = await CreateRepositoryAsync();
+        var period = await SeedPeriodAsync(repository, 2026, 1);
+        // Pravidelná faktura s DUZP uprostřed měsíce a doklad s DUZP k poslednímu dni.
+        await SeedLineAsync(repository, period, "F1", "Dodavatel", 1000m, 210m);
+        var lastDay = await SeedLineAsync(repository, period, "F2", "Dodavatel", 500m, 105m);
+        lastDay.TaxableSupplyDate = new DateOnly(2026, 1, 31);
+        await repository.SaveInvoiceAsync(lastDay);
+
+        var vm = CreateViewModel(repository);
+        await WaitForAsync(() => vm.StatusMessage == "Načteno.", "načtení");
+        vm.SelectedPeriod = vm.Periods.Single(x => x.Month == 1);
+        await WaitForAsync(() => vm.Invoices.Count == 2, "řádky");
+        await vm.AddPeriodCommand.ExecuteAsync(null);
+
+        var created = (await repository.LoadPeriodsAsync()).Single(x => x.Month == 2);
+        var copies = await repository.LoadInvoicesAsync(created.Id);
+        // Den v měsíci se zachovává; poslední den měsíce zůstává posledním dnem (únor má 28).
+        Assert.Equal(
+            [new DateOnly(2026, 2, 15), new DateOnly(2026, 2, 28)],
+            copies.Select(x => x.TaxableSupplyDate).OrderBy(x => x).ToArray());
+    }
+
     private static async Task<DphRepository> CreateRepositoryAsync()
     {
         var repository = new DphRepository(Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite"));

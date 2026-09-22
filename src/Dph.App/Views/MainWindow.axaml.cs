@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -13,6 +14,7 @@ public partial class MainWindow : Window
 {
     private bool _isSyncingCounterpartySelection;
     private bool _closeSavesCompleted;
+    private MainWindowViewModel? _busyWatched;
 
     public MainWindow()
     {
@@ -25,8 +27,17 @@ public partial class MainWindow : Window
     {
         base.OnDataContextChanged(e);
 
+        if (_busyWatched is not null)
+        {
+            _busyWatched.PropertyChanged -= OnViewModelPropertyChanged;
+            _busyWatched = null;
+        }
+
         if (DataContext is MainWindowViewModel viewModel)
         {
+            _busyWatched = viewModel;
+            viewModel.PropertyChanged += OnViewModelPropertyChanged;
+            UpdateBusyCursor(viewModel);
             viewModel.PickExportDirectoryAsync = PickExportDirectoryAsync;
             viewModel.PickDatabaseBackupTargetAsync = PickDatabaseBackupTargetAsync;
             viewModel.PickDatabaseBackupSourceAsync = PickDatabaseBackupSourceAsync;
@@ -40,6 +51,18 @@ public partial class MainWindow : Window
             viewModel.Issuing.ConfirmAsync = ConfirmAsync;
         }
     }
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainWindowViewModel.IsBusy) && sender is MainWindowViewModel viewModel)
+        {
+            UpdateBusyCursor(viewModel);
+        }
+    }
+
+    // Čekání na ISDS (odeslání, doručenka) trvá i desítky sekund – kurzor to musí dát najevo.
+    private void UpdateBusyCursor(MainWindowViewModel viewModel)
+        => Cursor = viewModel.IsBusy ? new Cursor(StandardCursorType.Wait) : Cursor.Default;
 
     private async Task<string?> PickPdfTargetAsync(string currentDirectory, string defaultFileName)
     {
