@@ -96,10 +96,24 @@ flatpak build-bundle _flatpak_repo "dist/DphAsistent-${VERSION}.flatpak" \
 # instalace nebo aktualizace: flatpak install --user "dist/DphAsistent-${VERSION}.flatpak"
 ```
 
-Release workflow spouští `sync-metainfo-release.py` automaticky. Doporučené je přidat
-ke každé verzi popis změn přímo do `<releases>` ve zdrojovém metainfo; pokud se na to
-zapomene, build vloží alespoň generický záznam se správnou verzí a datem. GNOME Software
-pak nezůstane na verzi předchozího vydání.
+Release workflow spouští `sync-metainfo-release.py` automaticky. **Popis změn patří před
+otagováním do `<releases>` ve zdrojovém metainfo** – právě ten text ukazuje GNOME Software
+v Historii verzí. S popisem z GitHub Release nemá nic společného (ten generuje GitHub sám
+přes `generate_release_notes`). Když záznam chybí, build vloží jen generický („Vydání X.")
+se správnou verzí a datem a vypíše varování do logu workflow.
+
+Předverze označujte `type="development"`:
+
+```xml
+<release version="0.3.0-rc2" type="development" date="2026-09-23">
+```
+
+Bez toho je GNOME Software míchá mezi stabilní vydání. AppStream navíc porovnává
+`0.3.0-rc2` jako **novější** než `0.3.0` (`appstreamcli vercmp 0.3.0-rc2 0.3.0` → `>>`),
+takže neoznačená předverze by po vydání finální verze zůstala viset jako nejnovější.
+Skript `type="development"` u verzí s pomlčkou doplňuje sám.
+
+Metainfo po úpravě ověřte: `appstreamcli validate --no-net packaging/linux/io.github.koudelkab.DphAsistent.metainfo.xml`.
 
 ---
 

@@ -83,6 +83,29 @@
   </branding>
 
   <releases>
+    <release version="0.3.0-rc2" type="development" date="2026-09-23">
+      <description>
+        <p>
+          Filings can now be sent to the tax office over an ISDS data box, including
+          downloading the message and delivery receipt. Submissions go to the data box of
+          the tax office branch, the recipient is verified against ISDS before sending, and
+          the box can also be entered by hand. Copying a period keeps the day of the taxable
+          supply date.
+        </p>
+        <p xml:lang="cs">
+          Přiznání a kontrolní hlášení jde odeslat finanční správě datovou schránkou včetně
+          stažení ZFO zprávy a doručenky. Podání míří do schránky územního pracoviště,
+          adresát se před odesláním ověří v ISDS a schránku lze zadat i ručně. Nové období
+          z vybraného zachovává den DUZP kopírovaných faktur.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.0-rc" type="development" date="2026-09-09">
+      <description>
+        <p>Sending filings to the tax office over a data box.</p>
+        <p xml:lang="cs">Odesílání přiznání přes datovou schránku.</p>
+      </description>
+    </release>
     <release version="0.2.3" date="2026-08-17">
       <description>
         <p>Fixed creating a new invoice from a template.</p>

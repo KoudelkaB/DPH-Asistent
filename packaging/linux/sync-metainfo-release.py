@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -20,6 +22,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("version")
     parser.add_argument("release_date")
     return parser.parse_args()
+
+
+def warn(message: str) -> None:
+    """Varování, které je vidět i v logu GitHub Actions."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning::{message}")
+    print(f"VAROVÁNÍ: {message}", file=sys.stderr)
 
 
 def main() -> None:
@@ -52,10 +61,19 @@ def main() -> None:
     newline = "\r\n" if "\r\n" in contents else "\n"
     child_indent = f"{indent}  "
     text_indent = f"{child_indent}  "
+    # Předverze (0.3.0-rc) se musí označit jako vývojová, jinak ji GNOME Software nabízí
+    # a řadí mezi stabilní vydání – AppStream ji navíc porovnává jako novější než 0.3.0.
+    is_prerelease = "-" in args.version
+    release_type = ' type="development"' if is_prerelease else ""
+    warn(
+        f"Ve zdrojovém metainfo chybí popis změn pro verzi {args.version}; "
+        f"vkládá se jen generický text. Doplňte <release version=\"{args.version}\""
+        f"{release_type} date=\"{args.release_date}\"> s popisem změn a vydejte znovu."
+    )
     entry = newline.join(
         (
             "",
-            f'{child_indent}<release version="{args.version}" date="{args.release_date}">',
+            f'{child_indent}<release version="{args.version}"{release_type} date="{args.release_date}">',
             f"{text_indent}<description>",
             f"{text_indent}  <p>Release {args.version}.</p>",
             f'{text_indent}  <p xml:lang="cs">Vydání {args.version}.</p>',
