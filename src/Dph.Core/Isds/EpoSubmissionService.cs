@@ -17,7 +17,12 @@ public sealed record EpoSendReport(
     /// Odeslaná podání, u kterých ISDS ani po opakovaných pokusech nevydal ZFO nebo doručenku.
     /// Není to chyba – doručenka vzniká s odstupem a dotáhne se dalším stiskem tlačítka.
     /// </summary>
-    int ArtifactsPending = 0);
+    int ArtifactsPending = 0,
+    /// <summary>
+    /// Odeslaná podání, u kterých stažení ZFO nebo doručenky skončilo chybou (soubor nejde uložit,
+    /// ISDS odmítl ani po všech pokusech). Na rozdíl od <see cref="ArtifactsPending"/> to čekání nespraví.
+    /// </summary>
+    int ArtifactsFailed = 0);
 
 /// <summary>
 /// Odešle vyexportovaná XML příslušnému finančnímu úřadu datovou schránkou a stáhne k nim ZFO
@@ -182,7 +187,7 @@ public sealed class EpoSubmissionService(
 
         // ZFO a doručenky se dotahují až po odeslání všech zpráv – hned po odeslání stejně
         // v ISDS nejsou a čekání se tak nesčítá za každé podání zvlášť.
-        var stillMissingArtifacts = await FetchMissingArtifactsAsync(
+        var (pendingArtifacts, failedArtifacts) = await FetchMissingArtifactsAsync(
             credentials,
             submissions,
             completedIds,
@@ -190,15 +195,16 @@ public sealed class EpoSubmissionService(
             progress,
             cancellationToken);
 
-        return new EpoSendReport(sent, failed, completedIds.Count, unresolved, blocked, messages, stillMissingArtifacts);
+        return new EpoSendReport(sent, failed, completedIds.Count, unresolved, blocked, messages, pendingArtifacts, failedArtifacts);
     }
 
     /// <summary>
     /// Stáhne chybějící ZFO a doručenky u odeslaných podání; každému pokusu předchází prodleva,
     /// protože ISDS je hned po odeslání ještě nevydá. Hlášky o neúspěchu se zapíšou až
-    /// z posledního pokusu, aby se stejná věta neopakovala u každého kola.
+    /// z posledního pokusu, aby se stejná věta neopakovala u každého kola. Vrací počet podání,
+    /// kterým ZFO či doručenka pořád chybí, rozdělený na čekající a chybová.
     /// </summary>
-    private async Task<int> FetchMissingArtifactsAsync(
+    private async Task<(int Pending, int Failed)> FetchMissingArtifactsAsync(
         IsdsCredentials credentials,
         IReadOnlyList<EpoSubmission> submissions,
         HashSet<long> completedIds,
@@ -206,6 +212,7 @@ public sealed class EpoSubmissionService(
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
+        var failed = 0;
         var outstanding = submissions.Where(x => x.IsSent && x.HasMissingArtifacts).ToList();
         for (var attempt = 0; outstanding.Count > 0 && attempt < ArtifactFetchDelays.Length; attempt++)
         {
@@ -220,12 +227,30 @@ public sealed class EpoSubmissionService(
             var stillMissing = new List<EpoSubmission>();
             foreach (var submission in outstanding)
             {
-                if (await TryCompleteArtifactsAsync(credentials, submission, isLastAttempt ? messages : null, cancellationToken))
+                var problems = new List<string>();
+                var error = await TryCompleteArtifactsAsync(credentials, submission, problems, cancellationToken);
+
+                // Za dotažené se počítá až podání, kterému už nic nechybí – jinak by totéž podání
+                // bylo ve výsledku zároveň „staženo“ i „chybí doručenka“.
+                if (!submission.HasMissingArtifacts)
                 {
                     completedIds.Add(submission.Id);
+                    continue;
                 }
 
-                if (submission.HasMissingArtifacts)
+                // Chyba není „ISDS doručenku ještě nevydal“: problém se souborem čekání nespraví
+                // a chyba ISDS, která vydrží všechny pokusy, taky ne. Mezi čekající nepatří.
+                var hasFailed = error is IOException or UnauthorizedAccessException || (error is not null && isLastAttempt);
+                if (hasFailed || isLastAttempt)
+                {
+                    messages.AddRange(problems);
+                }
+
+                if (hasFailed)
+                {
+                    failed++;
+                }
+                else
                 {
                     stillMissing.Add(submission);
                 }
@@ -234,7 +259,7 @@ public sealed class EpoSubmissionService(
             outstanding = stillMissing;
         }
 
-        return outstanding.Count;
+        return (outstanding.Count, failed);
     }
 
     /// <summary>
@@ -328,22 +353,25 @@ public sealed class EpoSubmissionService(
         return reference.Length <= 50 ? reference : reference[..50];
     }
 
-    /// <summary>Dotáhne ZFO odeslané zprávy a doručenku k už odeslanému podání.</summary>
-    private async Task<bool> TryCompleteArtifactsAsync(
+    /// <summary>
+    /// Dotáhne ZFO odeslané zprávy a doručenku k už odeslanému podání. Vrací chybu, kterou
+    /// stažení nebo uložení skončilo, a null, když se nic nepokazilo (ISDS je jen zatím nevydal).
+    /// </summary>
+    private async Task<Exception?> TryCompleteArtifactsAsync(
         IsdsCredentials credentials,
         EpoSubmission submission,
-        List<string>? messages,
+        List<string> messages,
         CancellationToken cancellationToken)
     {
         if (submission.MessageId is not { Length: > 0 } messageId || !submission.HasMissingArtifacts)
         {
-            return false;
+            return null;
         }
 
         var directory = Path.GetDirectoryName(submission.FilePath);
         if (string.IsNullOrEmpty(directory))
         {
-            return false;
+            return null;
         }
 
         // ID zprávy v názvu drží ZFO od sebe, když se stejný soubor exportuje a odesílá znovu
@@ -352,10 +380,12 @@ public sealed class EpoSubmissionService(
         string? messageZfo = null;
         string? deliveryZfo = null;
         DateTimeOffset? deliveryFetchedAt = null;
+        Exception? messageError = null;
+        Exception? deliveryError = null;
 
         if (submission.MessageZfoPath is null)
         {
-            messageZfo = await TryFetchAsync(
+            (messageZfo, messageError) = await TryFetchAsync(
                 () => client.DownloadSignedSentMessageAsync(credentials, messageId, cancellationToken),
                 Path.Combine(directory, $"{baseName}_zprava.zfo"),
                 $"{submission.FileName}: ZFO odeslané zprávy se nepodařilo stáhnout",
@@ -365,7 +395,7 @@ public sealed class EpoSubmissionService(
 
         if (submission.DeliveryZfoPath is null)
         {
-            deliveryZfo = await TryFetchAsync(
+            (deliveryZfo, deliveryError) = await TryFetchAsync(
                 () => client.DownloadSignedDeliveryInfoAsync(credentials, messageId, cancellationToken),
                 Path.Combine(directory, $"{baseName}_dorucenka.zfo"),
                 $"{submission.FileName}: doručenku se nepodařilo stáhnout",
@@ -374,16 +404,15 @@ public sealed class EpoSubmissionService(
             deliveryFetchedAt = deliveryZfo is null ? null : DateTimeOffset.UtcNow;
         }
 
-        if (messageZfo is null && deliveryZfo is null)
+        if (messageZfo is not null || deliveryZfo is not null)
         {
-            return false;
+            await repository.SaveSubmissionArtifactsAsync(submission.Id, messageZfo, deliveryZfo, deliveryFetchedAt, cancellationToken);
+            submission.MessageZfoPath ??= messageZfo;
+            submission.DeliveryZfoPath ??= deliveryZfo;
+            submission.DeliveryFetchedAt ??= deliveryFetchedAt;
         }
 
-        await repository.SaveSubmissionArtifactsAsync(submission.Id, messageZfo, deliveryZfo, deliveryFetchedAt, cancellationToken);
-        submission.MessageZfoPath ??= messageZfo;
-        submission.DeliveryZfoPath ??= deliveryZfo;
-        submission.DeliveryFetchedAt ??= deliveryFetchedAt;
-        return true;
+        return messageError ?? deliveryError;
     }
 
     // dmID je číslo, ale do názvu souboru se nesmí dostat nic, co by cestu rozbilo.
@@ -392,12 +421,13 @@ public sealed class EpoSubmissionService(
 
     // Chybějící ZFO nebo doručenka není důvod hlásit odeslání jako neúspěšné – zpráva odešla
     // a doručenka bývá k dispozici až za okamžik. Doplní se dalším stiskem tlačítka Odeslat.
-    // Vrací cestu k uloženému souboru, nebo null, když se stáhnout ani uložit nepodařilo.
-    private static async Task<string?> TryFetchAsync(
+    // Vrací cestu k uloženému souboru (null, když se stáhnout ani uložit nepodařilo) a chybu, kterou
+    // to skončilo – „ISDS ji zatím nevrací“ chybou není.
+    private static async Task<(string? Path, Exception? Error)> TryFetchAsync(
         Func<Task<byte[]?>> download,
         string targetPath,
         string failureMessage,
-        List<string>? messages,
+        List<string> messages,
         CancellationToken cancellationToken)
     {
         try
@@ -405,12 +435,12 @@ public sealed class EpoSubmissionService(
             var content = await download();
             if (content is null)
             {
-                messages?.Add($"{failureMessage} (ISDS ji zatím nevrací).");
-                return null;
+                messages.Add($"{failureMessage} (ISDS ji zatím nevrací).");
+                return (null, null);
             }
 
             await File.WriteAllBytesAsync(targetPath, content, cancellationToken);
-            return targetPath;
+            return (targetPath, null);
         }
         catch (IsdsException exception) when (exception.IsAuthenticationFailure)
         {
@@ -420,8 +450,8 @@ public sealed class EpoSubmissionService(
         }
         catch (Exception exception) when (exception is IsdsException or IOException or UnauthorizedAccessException)
         {
-            messages?.Add($"{failureMessage}: {exception.Message}");
-            return null;
+            messages.Add($"{failureMessage}: {exception.Message}");
+            return (null, exception);
         }
     }
 

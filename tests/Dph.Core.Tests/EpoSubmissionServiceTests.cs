@@ -567,7 +567,7 @@ public sealed class EpoSubmissionServiceTests
 
         var report = await service.SendAsync(
             Credentials, context.Subject, context.Period, context.Submissions, "7nyn2d9",
-            progress: new Progress<string>(progress.Add));
+            progress: new ListProgress(progress));
 
         Assert.Equal(2, report.Sent);
         Assert.Equal(2, report.ArtifactsCompleted);
@@ -595,8 +595,10 @@ public sealed class EpoSubmissionServiceTests
         Assert.Equal(2, report.Sent);
         Assert.Equal(0, report.Failed);
         Assert.Equal(2, report.ArtifactsPending);
-        // ZFO odeslané zprávy se stáhnout podařilo, takže podání jsou „rozpracovaná“, ne chybná.
-        Assert.Equal(2, report.ArtifactsCompleted);
+        Assert.Equal(0, report.ArtifactsFailed);
+        // ZFO odeslané zprávy se stáhnout podařilo, ale doručenka chybí – podání jsou „rozpracovaná“,
+        // ne chybná, a za dotažená se nepočítají (jinak by byla zároveň „stažená“ i „chybějící“).
+        Assert.Equal(0, report.ArtifactsCompleted);
         // Hláška o nestažené doručence padne jen jednou za podání, ne z každého kola.
         Assert.Equal(2, report.Messages.Count(x => x.Contains("doručenku se nepodařilo stáhnout")));
         Assert.All(await context.Repository.LoadSubmissionsAsync(context.Period.Id), x =>
@@ -605,6 +607,12 @@ public sealed class EpoSubmissionServiceTests
             Assert.NotNull(x.MessageZfoPath);
             Assert.Null(x.DeliveryZfoPath);
         });
+    }
+
+    // Progress<T> by hlášení posílal na pool vláken a test by je nemusel stihnout vidět.
+    private sealed class ListProgress(List<string> target) : IProgress<string>
+    {
+        public void Report(string value) => target.Add(value);
     }
 
     private class RecordingIsdsClient : IIsdsClient

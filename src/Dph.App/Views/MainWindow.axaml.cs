@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private bool _isSyncingCounterpartySelection;
     private bool _closeSavesCompleted;
     private MainWindowViewModel? _busyWatched;
+    private Cursor? _waitCursor;
 
     public MainWindow()
     {
@@ -61,8 +62,9 @@ public partial class MainWindow : Window
     }
 
     // Čekání na ISDS (odeslání, doručenka) trvá i desítky sekund – kurzor to musí dát najevo.
+    // Kurzor drží systémový prostředek, proto se vytvoří jednou a pak se jen přepíná.
     private void UpdateBusyCursor(MainWindowViewModel viewModel)
-        => Cursor = viewModel.IsBusy ? new Cursor(StandardCursorType.Wait) : Cursor.Default;
+        => Cursor = viewModel.IsBusy ? _waitCursor ??= new Cursor(StandardCursorType.Wait) : Cursor.Default;
 
     private async Task<string?> PickPdfTargetAsync(string currentDirectory, string defaultFileName)
     {

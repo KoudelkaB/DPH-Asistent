@@ -425,7 +425,7 @@ public sealed class MainWindowViewModelTests
 
         var created = (await repository.LoadPeriodsAsync()).Single(x => x.Month == 2);
         var copies = await repository.LoadInvoicesAsync(created.Id);
-        // Den v měsíci se zachovává; poslední den měsíce zůstává posledním dnem (únor má 28).
+        // Den v měsíci se zachovává; 31., který únor nemá, se zkrátí na jeho poslední den.
         Assert.Equal(
             [new DateOnly(2026, 2, 15), new DateOnly(2026, 2, 28)],
             copies.Select(x => x.TaxableSupplyDate).OrderBy(x => x).ToArray());

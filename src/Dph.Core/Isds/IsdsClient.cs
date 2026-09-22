@@ -87,15 +87,25 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
     private const string DataBoxAccessUrl = "https://ws1.datovka.gov.cz/DS/DsManage"; // db_access
     private const string DataBoxSearchUrl = "https://ws1.datovka.gov.cz/DS/df";       // db_search
 
+    // Jediný jmenný prostor všech služeb včetně FindDataBox2 (db_search.wsdl i dbTypes.xsd).
     private static readonly XNamespace Isds = "http://isds.czechpoint.cz/v20";
-    // Vyhledávání schránek běží na novější verzi rozhraní (FindDataBox2).
-    private static readonly XNamespace IsdsSearch = "http://isds.czechpoint.cz/v30";
     private static readonly XNamespace Soap = "http://schemas.xmlsoap.org/soap/envelope/";
     private static readonly XNamespace Xsi = "http://www.w3.org/2001/XMLSchema-instance";
 
     private const string SuccessStatus = "0000";
-    // Dotaz proběhl, jen mu neodpovídá žádná schránka.
-    private const string NoMatchStatus = "0002";
+    // Dotaz proběhl, jen mu neodpovídá žádná schránka (0002), resp. schránka s tímto ID
+    // neexistuje (5001) – obojí bere jako „nenalezeno“ i referenční klient libdatovka.
+    private static readonly string[] NoMatchStatuses = ["0002", "5001"];
+
+    // Prvky tDbOwnerInfoExt2 v pořadí podle schématu ISDS (dbTypes.xsd, včetně skupin gPersonName2,
+    // gBirthInfo a gAddressExt2) – pořadí je v xs:sequence závazné.
+    private static readonly string[] FindDataBoxOwnerFields =
+    [
+        "dbID", "aifoIsds", "dbType", "ic", "pnGivenNames", "pnLastName", "firmName", "biDate", "biCity",
+        "biCounty", "biState", "adCode", "adCity", "adDistrict", "adStreet", "adNumberInStreet",
+        "adNumberInMunicipality", "adZipCode", "adState", "nationality", "dbIdOVM", "dbState",
+        "dbOpenAddressing", "dbUpperID",
+    ];
 
     // Zpráva smí mít nejvýš 50 MB příloh; XML přiznání je o několik řádů menší, kontrolu děláme
     // jen proto, aby se místo obskurní chyby serveru ukázalo srozumitelné hlášení.
@@ -227,44 +237,48 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
         string dataBoxId,
         CancellationToken cancellationToken = default)
     {
-        // Při vyplněném dbID se ostatní kritéria ignorují a vrátí se nejvýš jedna schránka.
-        var request = new XElement(IsdsSearch + "FindDataBox2",
-            new XElement(IsdsSearch + "dbOwnerInfo",
-                new XElement(IsdsSearch + "dbID", dataBoxId)));
+        // Při vyplněném dbID se ostatní kritéria ignorují a vrátí se nejvýš jedna schránka. Prvky
+        // dbOwnerInfo jsou ve schématu povinné (byť nillable) a řada z nich je typovaná (boolean,
+        // datum, číslo, výčet) – prázdný řetězec by schématem neprošel, proto nevyplněné jako xsi:nil.
+        var request = new XElement(Isds + "FindDataBox2",
+            new XElement(Isds + "dbOwnerInfo",
+                FindDataBoxOwnerFields.Select(x => x == "dbID"
+                    ? new XElement(Isds + x, dataBoxId)
+                    : Nil(x))));
 
         XElement response;
         try
         {
-            response = await CallAsync(DataBoxSearchUrl, credentials, request, "dbStatus", cancellationToken, IsdsSearch);
+            response = await CallAsync(DataBoxSearchUrl, credentials, request, "dbStatus", cancellationToken);
         }
-        catch (IsdsException exception) when (exception.StatusCode == NoMatchStatus)
+        catch (IsdsException exception) when (NoMatchStatuses.Contains(exception.StatusCode))
         {
             return null;
         }
 
-        var owner = response.Element(IsdsSearch + "dbResults")?.Elements(IsdsSearch + "dbOwnerInfo").FirstOrDefault();
+        var owner = response.Element(Isds + "dbResults")?.Elements(Isds + "dbOwnerInfo").FirstOrDefault();
         if (owner is null)
         {
             return null;
         }
 
-        var name = Text(owner.Element(IsdsSearch + "firmName"));
+        var name = Text(owner.Element(Isds + "firmName"));
         if (string.IsNullOrWhiteSpace(name))
         {
             name = string.Join(' ', new[]
             {
-                Text(owner.Element(IsdsSearch + "pnGivenNames")),
-                Text(owner.Element(IsdsSearch + "pnLastName"))
+                Text(owner.Element(Isds + "pnGivenNames")),
+                Text(owner.Element(Isds + "pnLastName"))
             }.Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
         return new IsdsDataBoxInfo(
-            Text(owner.Element(IsdsSearch + "dbID")),
+            Text(owner.Element(Isds + "dbID")),
             name,
             BuildAddress(owner),
-            Text(owner.Element(IsdsSearch + "dbType")),
+            Text(owner.Element(Isds + "dbType")),
             // Jen stav 1 znamená zpřístupněnou schránku, do které lze zprávu doručit.
-            Text(owner.Element(IsdsSearch + "dbState")) == "1");
+            Text(owner.Element(Isds + "dbState")) == "1");
     }
 
     // Adresa sídla schránky – slouží jen ke kontrole očima, proto stačí jednořádkový tvar.
@@ -272,13 +286,13 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
     {
         var houseNumber = string.Join('/', new[]
         {
-            Text(owner.Element(IsdsSearch + "adNumberInMunicipality")),
-            Text(owner.Element(IsdsSearch + "adNumberInStreet"))
+            Text(owner.Element(Isds + "adNumberInMunicipality")),
+            Text(owner.Element(Isds + "adNumberInStreet"))
         }.Where(x => !string.IsNullOrWhiteSpace(x)));
 
-        var street = string.Join(' ', new[] { Text(owner.Element(IsdsSearch + "adStreet")), houseNumber }
+        var street = string.Join(' ', new[] { Text(owner.Element(Isds + "adStreet")), houseNumber }
             .Where(x => !string.IsNullOrWhiteSpace(x)));
-        var city = string.Join(' ', new[] { Text(owner.Element(IsdsSearch + "adZipCode")), Text(owner.Element(IsdsSearch + "adCity")) }
+        var city = string.Join(' ', new[] { Text(owner.Element(Isds + "adZipCode")), Text(owner.Element(Isds + "adCity")) }
             .Where(x => !string.IsNullOrWhiteSpace(x)));
 
         return string.Join(", ", new[] { street, city }.Where(x => !string.IsNullOrWhiteSpace(x)));
@@ -360,8 +374,7 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
         IsdsCredentials credentials,
         XElement body,
         string statusElement,
-        CancellationToken cancellationToken,
-        XNamespace? responseNamespace = null)
+        CancellationToken cancellationToken)
     {
         var envelope = new XDocument(
             new XElement(Soap + "Envelope",
@@ -416,13 +429,12 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
                 };
             }
 
-            return ParseResponse(content, statusElement, responseNamespace);
+            return ParseResponse(content, statusElement);
         }
     }
 
-    public static XElement ParseResponse(string soapResponse, string statusElement, XNamespace? responseNamespace = null)
+    public static XElement ParseResponse(string soapResponse, string statusElement)
     {
-        var ns = responseNamespace ?? Isds;
         XDocument document;
         try
         {
@@ -452,8 +464,8 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
         var payload = body.Elements().FirstOrDefault()
             ?? throw new IsdsException("Odpověď ISDS je prázdná.") { IsOutcomeUnknown = true };
 
-        var status = payload.Element(ns + statusElement);
-        var code = Text(status?.Element(ns + $"{statusElement}Code"));
+        var status = payload.Element(Isds + statusElement);
+        var code = Text(status?.Element(Isds + $"{statusElement}Code"));
         if (string.IsNullOrEmpty(code))
         {
             // Bez stavového kódu nevíme, jak server požadavek vyhodnotil – nesmíme to brát jako
@@ -463,7 +475,7 @@ public sealed class IsdsClient(HttpClient httpClient) : IIsdsClient
 
         if (code != SuccessStatus)
         {
-            var message = Text(status?.Element(ns + $"{statusElement}Message"));
+            var message = Text(status?.Element(Isds + $"{statusElement}Message"));
             throw new IsdsException(
                 string.IsNullOrWhiteSpace(message)
                     ? $"ISDS odmítl požadavek (kód {code})."

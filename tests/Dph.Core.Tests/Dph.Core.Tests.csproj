@@ -19,6 +19,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Oficiální schéma ISDS beze změn (dbTypes.xsd v3.09) – regresní kontrola odesílaných požadavků. -->
+    <None Include="Resources\Isds\dbTypes.xsd" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Dph.Core\Dph.Core.csproj" />
   </ItemGroup>
 

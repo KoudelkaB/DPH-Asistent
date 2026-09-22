@@ -189,11 +189,6 @@ public static class TaxOfficeDataBoxes
     private static readonly Dictionary<string, string> OfficeByWorkplaceCode =
         TaxOfficeDirectory.Workplaces.ToDictionary(x => x.Code, x => x.OfficeCode);
 
-    // Podání spravuje územní pracoviště, takže se posílá do jeho schránky. Když pracoviště vlastní
-    // schránku nemá (nebo není vybrané), zůstává adresátem finanční úřad – tam podání patří taky.
-    public static string? For(string? taxOfficeCode, string? workplaceCode)
-        => ForWorkplace(workplaceCode, taxOfficeCode) ?? For(taxOfficeCode);
-
     /// <summary>
     /// Schránka územního pracoviště. Je-li zadaný i kód finančního úřadu, vrátí schránku jen tehdy,
     /// když pracoviště pod ten úřad opravdu spadá – jinak null, ať podání nezamíří k cizímu úřadu.

@@ -198,7 +198,6 @@
                                         Command="{Binding UseAutomaticRecipientDataBoxCommand}"
                                         Content="Automaticky"
                                         HorizontalAlignment="Left"
-                                        IsEnabled="{Binding HasManualRecipientDataBox}"
                                         ToolTip.Tip="Zahodí ruční ID a vrátí výběr schránky na automatiku podle finančního úřadu a územního pracoviště. Totéž udělá i vymazání pole."/>
                                 <TextBlock Grid.Row="5" Grid.Column="4" Grid.ColumnSpan="4"
                                            Text="{Binding EffectiveRecipientText}"

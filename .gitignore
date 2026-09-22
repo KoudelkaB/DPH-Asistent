@@ -9,3 +9,4 @@ packaging/flatpak/staging/
 .flatpak-builder/
 _flatpak_build/
 _flatpak_repo/
+/.vs

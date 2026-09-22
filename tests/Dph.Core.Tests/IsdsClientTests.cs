@@ -1,7 +1,9 @@
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Xml;
 using System.Xml.Linq;
+using System.Xml.Schema;
 using Dph.Core.Isds;
 
 namespace Dph.Core.Tests;
@@ -437,13 +439,13 @@ public sealed class IsdsClientTests
         Assert.Contains("Internal error", exception.Message);
     }
 
-    // ─── Vyhledání schránky adresáta (FindDataBox2, rozhraní v30) ───
+    // ─── Vyhledání schránky adresáta (FindDataBox2) ───
 
     [Fact]
     public async Task Find_data_box_returns_the_owner_of_the_recipient_box()
     {
         var handler = new StubHandler(Ok("""
-            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v30">
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v20">
               <p:dbResults>
                 <p:dbOwnerInfo>
                   <p:dbID>2p2n5ad</p:dbID>
@@ -473,7 +475,7 @@ public sealed class IsdsClientTests
 
         // Dotaz jde na rozhraní vyhledávání a nese hledané ID.
         Assert.Equal("https://ws1.datovka.gov.cz/DS/df", handler.RequestUri!.ToString());
-        XNamespace search = "http://isds.czechpoint.cz/v30";
+        XNamespace search = "http://isds.czechpoint.cz/v20";
         Assert.Equal("2p2n5ad", XDocument.Parse(handler.RequestBody!).Descendants(search + "dbID").Single().Value);
     }
 
@@ -481,7 +483,7 @@ public sealed class IsdsClientTests
     public async Task Find_data_box_reports_a_box_that_cannot_receive_messages()
     {
         var handler = new StubHandler(Ok("""
-            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v30">
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v20">
               <p:dbResults>
                 <p:dbOwnerInfo>
                   <p:dbID>abc1234</p:dbID>
@@ -506,7 +508,7 @@ public sealed class IsdsClientTests
     public async Task Unknown_data_box_is_not_an_error()
     {
         var handler = new StubHandler(Ok("""
-            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v30">
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v20">
               <p:dbResults/>
               <p:dbStatus>
                 <p:dbStatusCode>0002</p:dbStatusCode>
@@ -517,6 +519,74 @@ public sealed class IsdsClientTests
         var client = new IsdsClient(new HttpClient(handler));
 
         Assert.Null(await client.FindDataBoxAsync(new IsdsCredentials("uzivatel", "tajne"), "xxxxxxx"));
+    }
+
+    [Fact]
+    public async Task Nonexistent_data_box_id_is_not_an_error_either()
+    {
+        var handler = new StubHandler(Ok("""
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v20">
+              <p:dbStatus>
+                <p:dbStatusCode>5001</p:dbStatusCode>
+                <p:dbStatusMessage>Schránka neexistuje.</p:dbStatusMessage>
+              </p:dbStatus>
+            </p:FindDataBox2Response>
+            """));
+        var client = new IsdsClient(new HttpClient(handler));
+
+        Assert.Null(await client.FindDataBoxAsync(new IsdsCredentials("uzivatel", "tajne"), "zzzzzzz"));
+    }
+
+    [Fact]
+    public async Task Find_data_box_request_is_valid_against_the_isds_schema()
+    {
+        var handler = new StubHandler(Ok("""
+            <p:FindDataBox2Response xmlns:p="http://isds.czechpoint.cz/v20">
+              <p:dbResults/>
+              <p:dbStatus><p:dbStatusCode>0002</p:dbStatusCode></p:dbStatus>
+            </p:FindDataBox2Response>
+            """));
+        var client = new IsdsClient(new HttpClient(handler));
+
+        await client.FindDataBoxAsync(new IsdsCredentials("uzivatel", "tajne"), "2p2n5ad");
+
+        var request = XDocument.Parse(handler.RequestBody!).Descendants(Isds + "FindDataBox2").Single();
+        Assert.Empty(ValidateFindDataBox(request));
+
+        // Kontrola má zuby: prázdný řetězec v typovaném prvku schématem neprojde (proto se
+        // nevyplněné prvky posílají jako xsi:nil) a jiný jmenný prostor taky ne.
+        var withEmptyState = new XElement(request);
+        withEmptyState.Descendants(Isds + "dbState").Single().ReplaceWith(new XElement(Isds + "dbState", ""));
+        Assert.NotEmpty(ValidateFindDataBox(withEmptyState));
+
+        XNamespace other = "http://isds.czechpoint.cz/v30";
+        var inOtherNamespace = new XElement(request);
+        foreach (var element in inOtherNamespace.DescendantsAndSelf())
+        {
+            element.Name = other + element.Name.LocalName;
+        }
+
+        Assert.NotEmpty(ValidateFindDataBox(inOtherNamespace));
+    }
+
+    // Proti oficiálnímu dbTypes.xsd beze změn – kdyby klient poslal jiný jmenný prostor, než
+    // deklaruje WSDL, kořen FindDataBox2 by schéma neznalo a test by selhal.
+    private static List<string> ValidateFindDataBox(XElement request)
+    {
+        var schemas = new XmlSchemaSet();
+        schemas.Add(null, Path.Combine(AppContext.BaseDirectory, "Resources", "Isds", "dbTypes.xsd"));
+        schemas.Compile();
+        var errors = new List<string>();
+
+        // Nedeklarovaný kořen XDocument.Validate tiše přeskočí – musí se odmítnout výslovně.
+        if (!schemas.GlobalElements.Contains(new XmlQualifiedName(request.Name.LocalName, request.Name.NamespaceName)))
+        {
+            errors.Add($"Schéma nezná kořen {request.Name}.");
+            return errors;
+        }
+
+        new XDocument(new XElement(request)).Validate(schemas, (_, e) => errors.Add(e.Message));
+        return errors;
     }
 
     private static HttpResponseMessage Ok(string body) => new(HttpStatusCode.OK)

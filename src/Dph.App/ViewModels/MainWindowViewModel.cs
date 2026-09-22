@@ -65,10 +65,10 @@ public partial class MainWindowViewModel : ViewModelBase
     private bool isSendingToTaxOffice;
 
     // Čekání na odpověď ISDS (odeslání, ověření adresáta, doručenka) trvá i desítky sekund.
-    // Nezahrnuje čas strávený v dialozích – tam by kurzor „čekej“ jen mátl.
+    // Nezahrnuje čas strávený v dialozích – tam by kurzor „čekej“ jen mátl. Okno podle toho
+    // přepne kurzor na „čekej“, aby ticho nevypadalo jako zamrznutá aplikace.
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsBusy))]
-    private bool isWaitingForIsds;
+    private bool isBusy;
 
     // Export a odesílání si sahají na tytéž záznamy podání. Kdyby běžely současně, mohl by export
     // smazat řádek, který právě odchází, a odeslaná zpráva by se neměla kam zapsat – podání by pak
@@ -76,9 +76,6 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendToTaxOfficeCommand))]
     private bool isExportingXml;
-
-    // Okno podle toho přepne kurzor na „čekej“, aby ticho nevypadalo jako zamrznutá aplikace.
-    public bool IsBusy => IsWaitingForIsds;
 
     private static readonly NumberFormatInfo CzkFormat = new() { NumberGroupSeparator = " ", NumberDecimalDigits = 0 };
 
@@ -618,7 +615,8 @@ public partial class MainWindowViewModel : ViewModelBase
             var resolved = ResolveRecipient();
             if (resolved.DataBoxId is null)
             {
-                return resolved.Error ?? "";
+                // Náhled nic neodesílá ani neruší – jen říká, proč by odeslání teď neprošlo.
+                return resolved.Error is null ? "" : $"Podání teď nejde odeslat: {resolved.Error}";
             }
 
             return resolved.IsManual
@@ -628,7 +626,7 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     /// <summary>Vrátí výběr adresáta na automatiku podle finančního úřadu a územního pracoviště.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(HasManualRecipientDataBox))]
     private void UseAutomaticRecipientDataBox()
     {
         if (!HasManualRecipientDataBox)
@@ -1314,8 +1312,17 @@ public partial class MainWindowViewModel : ViewModelBase
         TaxSubject.PostalCode = detail.PostalCode ?? "";
 
         // Cílový finanční úřad je v ARES autoritativní, takže ho přepíšeme i když už je vyplněný.
+        var manualRecipientDropped = false;
         if (!string.IsNullOrEmpty(detail.TaxOfficeCode))
         {
+            // Ruční schránka patřila k dosavadnímu úřadu – po jeho změně by podání tiše mířilo na
+            // starou adresu. Combobox ji tu nezruší, protože se jen synchronizuje z poplatníka.
+            if (detail.TaxOfficeCode.Trim() != TaxSubject.TaxOfficeCode.Trim() && HasManualRecipientDataBox)
+            {
+                TaxSubject.RecipientDataBoxId = null;
+                manualRecipientDropped = true;
+            }
+
             TaxSubject.TaxOfficeCode = detail.TaxOfficeCode;
         }
 
@@ -1327,6 +1334,10 @@ public partial class MainWindowViewModel : ViewModelBase
         StatusMessage = detail.TaxOfficeCode is null
             ? $"ARES: {detail.OfficialName} (FÚ se nepodařilo určit, doplň ručně)"
             : $"ARES: {detail.OfficialName}, finanční úřad {detail.TaxOfficeCode}";
+        if (manualRecipientDropped)
+        {
+            StatusMessage += " Ruční ID datové schránky úřadu zrušeno – adresát se zase vybere automaticky.";
+        }
     }
 
     private static TaxSubject CloneTaxSubject(TaxSubject s) => new()
@@ -1915,6 +1926,14 @@ public partial class MainWindowViewModel : ViewModelBase
             ? "Podání už datovou schránkou odešla, chybí jen ZFO zprávy nebo doručenka. Tlačítko je znovu stáhne, nic se neodesílá podruhé."
             : "Odešle exportovaná XML vybraného období datovou schránkou příslušnému územnímu pracovišti finančního úřadu a stáhne ZFO zprávy a doručenku. Aktivní, dokud jsou v období neodeslaná XML nebo chybí doručenka.";
 
+    // Průběh odesílání rovnou do stavového řádku. Služba navazuje na vlákně UI (bez ConfigureAwait),
+    // takže hlášení přichází odtud; Progress<T> by zápis jen odložil a pozdní hlášení by pak mohlo
+    // přepsat výsledek, který se do stavového řádku zapíše po skončení.
+    private sealed class StatusProgress(Action<string> report) : IProgress<string>
+    {
+        public void Report(string value) => report(value);
+    }
+
     private sealed record RecipientChoice(
         string? DataBoxId,
         string Description,
@@ -1925,7 +1944,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
     /// <summary>
     /// Vybere datovou schránku adresáta: ruční ID má přednost, jinak územní pracoviště a jako
-    /// záloha finanční úřad. Vrací i popis pro potvrzovací dialog, nebo důvod, proč to nejde.
+    /// záloha finanční úřad. Vrací i popis pro potvrzovací dialog, nebo důvod, proč to nejde
+    /// (bez úvodu – odeslání i náhled ve formuláři si ho uvedou po svém).
     /// </summary>
     private RecipientChoice ResolveRecipient()
     {
@@ -1936,7 +1956,7 @@ public partial class MainWindowViewModel : ViewModelBase
             return TaxOfficeDataBoxes.IsValidId(manual)
                 ? new RecipientChoice(manual, "ručně zadaná datová schránka", IsManual: true, Error: null)
                 : new RecipientChoice(null, "", false,
-                    $"Odeslání zrušeno: ručně zadané ID datové schránky „{manual}“ nemá tvar 7 znaků (písmena a číslice).");
+                    $"ručně zadané ID datové schránky „{manual}“ nemá tvar 7 znaků (písmena a číslice).");
         }
 
         // Bez známého finančního úřadu se nikam neposílá, i kdyby bylo vybrané územní pracoviště –
@@ -1945,8 +1965,8 @@ public partial class MainWindowViewModel : ViewModelBase
         if (officeBox is null)
         {
             return new RecipientChoice(null, "", false, string.IsNullOrWhiteSpace(TaxSubject.TaxOfficeCode)
-                ? "Odeslání zrušeno: u poplatníka není vybraný finanční úřad."
-                : $"Odeslání zrušeno: pro finanční úřad {TaxSubject.TaxOfficeCode} není v aplikaci známé ID datové schránky. Zadej ID ručně v údajích poplatníka.");
+                ? "u poplatníka není vybraný finanční úřad."
+                : $"pro finanční úřad {TaxSubject.TaxOfficeCode} není v aplikaci známé ID datové schránky. Zadej ID ručně v údajích poplatníka.");
         }
 
         var name = TaxOffices.FirstOrDefault(x => x.Code == TaxSubject.TaxOfficeCode)?.Name ?? "příslušný finanční úřad";
@@ -1957,8 +1977,11 @@ public partial class MainWindowViewModel : ViewModelBase
         var workplaceBox = TaxOfficeDataBoxes.ForWorkplace(TaxSubject.WorkplaceCode, TaxSubject.TaxOfficeCode);
         if (workplaceBox is null)
         {
-            var stale = !string.IsNullOrWhiteSpace(TaxSubject.WorkplaceCode)
-                && !TaxOfficeDataBoxes.BelongsToOffice(TaxSubject.WorkplaceCode, TaxSubject.TaxOfficeCode);
+            // Příslušnost se ověřuje podle číselníku, ze kterého uživatel vybírá (živý ADIS, jinak
+            // zabudovaný) – pracoviště, které zabudovaný číselník nezná, není „cizí“, jen bez schránky.
+            var workplaceCode = TaxSubject.WorkplaceCode.Trim();
+            var stale = workplaceCode.Length > 0
+                && !_allWorkplaces.Any(x => x.Code == workplaceCode && x.OfficeCode == TaxSubject.TaxOfficeCode.Trim());
             return new RecipientChoice(officeBox, name, false, null, stale
                 ? $"⚠ Územní pracoviště {TaxSubject.WorkplaceCode} nepatří k úřadu {TaxSubject.TaxOfficeCode} – zkontrolujte údaje poplatníka. Podání jde do schránky finančního úřadu."
                 : null);
@@ -1995,9 +2018,11 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             info = await _isdsClient.FindDataBoxAsync(credentials, recipient);
         }
-        catch (IsdsException exception) when (exception.IsAuthenticationFailure)
+        catch (IsdsException exception) when (exception.IsAuthenticationFailure
+            && exception.StatusCode != nameof(System.Net.HttpStatusCode.Forbidden))
         {
-            // Neplatné heslo se vyřeší až při odesílání – tady by jen zmátlo.
+            // Odmítnuté heslo (401) řeší volající – s ním by neprošlo ani odeslání. Zákaz (403) se
+            // ale může týkat jen vyhledávání schránek, proto ho ověření jen přizná a odeslání nezastaví.
             throw;
         }
         catch (IsdsException exception)
@@ -2091,20 +2116,25 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var resolved = ResolveRecipient();
-        if (resolved.Error is { } resolveError)
+        // Adresát je potřeba, jen když se něco posílá. Dotažení ZFO a doručenky k už odeslaným
+        // podáním na něm nezávisí – rozepsané ruční ID nebo chybějící úřad ho blokovat nesmí.
+        var sending = pending.Length > 0 || unresolved.Length > 0;
+        var resolved = sending ? ResolveRecipient() : null;
+        if (resolved?.Error is { } resolveError)
         {
-            StatusMessage = resolveError;
+            StatusMessage = $"Odeslání zrušeno: {resolveError}";
             return;
         }
 
-        var recipient = resolved.DataBoxId!;
-        var officeName = resolved.Description;
+        var recipient = resolved?.DataBoxId ?? "";
+        var officeName = resolved?.Description ?? "";
 
         // Přihlášení se řeší ještě před potvrzením: bez něj nejde adresáta ověřit v ISDS.
         var credentials = _credentialStore.Load()
             ?? await RequestAndStoreCredentialsAsync(
-                $"Zadejte přihlašovací údaje do datové schránky, ze které se podání odešle na {officeName}. Uloží se zabezpečeně v profilu uživatele a příště se už nezadávají.",
+                sending
+                    ? $"Zadejte přihlašovací údaje do datové schránky, ze které se podání odešle na {officeName}. Uloží se zabezpečeně v profilu uživatele a příště se už nezadávají."
+                    : "Zadejte přihlašovací údaje do datové schránky, ze které podání odešla. Uloží se zabezpečeně v profilu uživatele a příště se už nezadávají.",
                 "");
         if (credentials is null)
         {
@@ -2112,11 +2142,11 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        if (pending.Length > 0 || unresolved.Length > 0)
+        if (resolved is not null)
         {
             // Jméno schránky se tahá živě z ISDS, ať si uživatel nemusí adresáta ověřovat ručně.
             StatusMessage = "Ověřuji adresáta v datové schránce…";
-            IsWaitingForIsds = true;
+            IsBusy = true;
             List<string> verification;
             try
             {
@@ -2132,7 +2162,7 @@ public partial class MainWindowViewModel : ViewModelBase
             }
             finally
             {
-                IsWaitingForIsds = false;
+                IsBusy = false;
             }
 
             var lines = new List<string>();
@@ -2175,15 +2205,15 @@ public partial class MainWindowViewModel : ViewModelBase
             }
         }
 
-        StatusMessage = pending.Length > 0 || unresolved.Length > 0
+        StatusMessage = sending
             ? $"Odesílám {pending.Length + unresolved.Length} podání do datové schránky…"
             : "Stahuji chybějící ZFO a doručenky…";
         EpoSendReport? report = null;
-        IsWaitingForIsds = true;
+        IsBusy = true;
         try
         {
             // Doručenka po odeslání chvíli nevzniká; služba to zkouší znovu a průběh hlásí sem.
-            var progress = new Progress<string>(text => StatusMessage = text);
+            var progress = new StatusProgress(text => StatusMessage = text);
             report = await _submissionService.SendAsync(
                 credentials, TaxSubject, period, work, recipient, CancellationToken.None, progress);
         }
@@ -2202,7 +2232,7 @@ public partial class MainWindowViewModel : ViewModelBase
         }
         finally
         {
-            IsWaitingForIsds = false;
+            IsBusy = false;
         }
 
         if (report is null)
@@ -2241,6 +2271,11 @@ public partial class MainWindowViewModel : ViewModelBase
             summary.Add($"chybí doručenka u {report.ArtifactsPending} – dotáhne se později");
         }
 
+        if (report.ArtifactsFailed > 0)
+        {
+            summary.Add($"ZFO/doručenku se nepodařilo stáhnout u {report.ArtifactsFailed}");
+        }
+
         StatusMessage = summary.Count == 0
             ? $"Období {period.Year:D4}-{period.Month:D2}: nic nového k odeslání."
             : $"Období {period.Year:D4}-{period.Month:D2}: {string.Join(", ", summary)}.";
@@ -2261,7 +2296,7 @@ public partial class MainWindowViewModel : ViewModelBase
         if (details.Count > 0)
         {
             await ShowReportAsync(
-                report.Failed > 0 || report.Unresolved > 0 || report.Blocked > 0
+                report.Failed > 0 || report.Unresolved > 0 || report.Blocked > 0 || report.ArtifactsFailed > 0
                     ? "Odeslání skončilo s chybami"
                     : "Výsledek odeslání",
                 string.Join(Environment.NewLine, details));
@@ -2759,8 +2794,8 @@ public partial class MainWindowViewModel : ViewModelBase
                 source.EvidenceNumber = "";
             }
 
-            // Pravidelná faktura má DUZP pořád na stejný den – kopie proto drží den ze zdroje.
-            // Poslední den měsíce zůstává posledním dnem i v cílovém měsíci.
+            // Pravidelná faktura má DUZP pořád na stejný den – kopie proto drží den ze zdroje
+            // (den, který cílový měsíc nemá, se zkrátí na jeho poslední den).
             source.TaxableSupplyDate = TemplateDate.ShiftToMonth(source.TaxableSupplyDate, targetPeriod.Year, targetPeriod.Month);
             await _repository.SaveInvoiceAsync(source);
             copied++;

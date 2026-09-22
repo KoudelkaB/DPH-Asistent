@@ -49,13 +49,14 @@ public sealed class TaxOfficeDataBoxesTests
         => Assert.Equal(expected, TaxOfficeDataBoxes.ForWorkplace(workplaceCode));
 
     [Fact]
-    public void Workplace_takes_precedence_over_its_office()
+    public void Only_workplaces_with_their_own_data_box_are_routed_to_it()
     {
-        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.For("451", "2001"));
-        // Pracoviště bez vlastní schránky (optimalizované) i prázdná volba spadnou na finanční úřad.
-        Assert.Equal("7nyn2d9", TaxOfficeDataBoxes.For("451", ""));
-        Assert.Equal("6sxny3p", TaxOfficeDataBoxes.For("452", "2108")); // ÚzP v Dobříši
-        Assert.Null(TaxOfficeDataBoxes.For("", "9999"));
+        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.ForWorkplace("2001", "451"));
+        // Pracoviště bez vlastní schránky (optimalizované) i prázdná volba nemají kam – podání pak
+        // jde do schránky finančního úřadu.
+        Assert.Null(TaxOfficeDataBoxes.ForWorkplace("", "451"));
+        Assert.Null(TaxOfficeDataBoxes.ForWorkplace("2108", "452")); // ÚzP v Dobříši
+        Assert.Null(TaxOfficeDataBoxes.ForWorkplace("9999", ""));
     }
 
     [Fact]
@@ -64,8 +65,7 @@ public sealed class TaxOfficeDataBoxesTests
         // Uložený kód pracoviště přežije změnu úřadu (ARES úřad přepíše, pracoviště nechá být).
         // ÚzP pro Prahu 1 patří pod 451; se Středočeským krajem (452) se nesmí použít.
         Assert.Null(TaxOfficeDataBoxes.ForWorkplace("2001", "452"));
-        Assert.Equal("6sxny3p", TaxOfficeDataBoxes.For("452", "2001"));
-        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.For("451", "2001"));
+        Assert.Equal("2p2n5ad", TaxOfficeDataBoxes.ForWorkplace("2001", "451"));
 
         Assert.False(TaxOfficeDataBoxes.BelongsToOffice("2001", "452"));
         Assert.True(TaxOfficeDataBoxes.BelongsToOffice("2001", "451"));

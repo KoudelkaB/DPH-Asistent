@@ -8,15 +8,10 @@ public static class TemplateDate
     /// <summary>
     /// Přenese DUZP do zadaného měsíce se zachováním dne. Pravidelné faktury mívají DUZP pořád
     /// na stejný den v měsíci, takže kopie má sedět na tentýž den.
-    /// Výjimka je poslední den měsíce: ten se drží na konci cílového měsíce (31. 1. → 28. 2.),
-    /// protože „poslední den“ je záměr, ne konkrétní číslo. Den, který v cílovém měsíci není
-    /// (30. → únor), se stejně tak zkrátí na poslední den.
+    /// Den, který v cílovém měsíci není (31. → duben, 30. → únor), se zkrátí na poslední den.
+    /// Za „poslední den měsíce“ se naopak nepovažuje 28. 2. ani 30. 4. – u pravidelné faktury
+    /// na 28. nebo 30. je to konkrétní číslo a kopie má zůstat na něm.
     /// </summary>
     public static DateOnly ShiftToMonth(DateOnly source, int year, int month)
-    {
-        var daysInTarget = DateTime.DaysInMonth(year, month);
-        var isEndOfMonth = source.Day == DateTime.DaysInMonth(source.Year, source.Month);
-        var day = isEndOfMonth ? daysInTarget : Math.Min(source.Day, daysInTarget);
-        return new DateOnly(year, month, day);
-    }
+        => new(year, month, Math.Min(source.Day, DateTime.DaysInMonth(year, month)));
 }

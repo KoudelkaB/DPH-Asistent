@@ -1,6 +1,7 @@
 using Dph.App.ViewModels;
 using Dph.Core.Domain;
 using Dph.Core.Persistence;
+using Microsoft.Data.Sqlite;
 
 namespace Dph.App.Tests;
 
@@ -52,6 +53,9 @@ public sealed class IssuedInvoiceViewModelTests
         }
         finally
         {
+            // Microsoft.Data.Sqlite drží zavřená připojení v poolu a soubor s nimi zůstává otevřený –
+            // bez vyprázdnění poolu by ho Windows nedovolil smazat.
+            SqliteConnection.ClearAllPools();
             File.Delete(path);
         }
     }
